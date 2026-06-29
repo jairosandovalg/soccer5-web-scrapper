@@ -4,11 +4,11 @@ import streamlit as st
 import pandas as pd
 import time
 import subprocess
-import gc  # <--- Crucial para limpiar la memoria RAM manualmente
+import gc
 
 # --- 1. COMPROBACIÓN E INSTALACIÓN INTERNA CON STEALTH ---
 if 'navegador_configurado' not in st.session_state:
-    with st.spinner("Inicializando entorno optimizado de Playwright... (Solo la primera vez)"):
+    with st.spinner("Inicializando entorno balanceado de Playwright... (Solo la primera vez)"):
         try:
             # Descargamos el binario de chromium correspondiente a Playwright
             subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
@@ -27,11 +27,11 @@ from playwright_stealth import stealth_sync
 # Configuración de la interfaz de Streamlit
 st.set_page_config(page_title="Bot de Estadísticas Final", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo - Flashscore (Anti-Bot Pro)")
-st.subheader("Análisis de métricas en tiempo real con optimización extrema de memoria RAM")
+st.subheader("Análisis de métricas en tiempo real con gestión balanceada de memoria")
 
 # --- 2. EXTRACCIÓN DE DATOS DE PARTIDOS ---
 def extraer_estadisticas_partido(context, url_partido):
-    """Abre una pestaña nueva, extrae la info y libera memoria inmediatamente."""
+    """Abre una pestaña nueva de forma segura, extrae la info y la cierra limpiamente."""
     datos_partido = {
         "Marcador": "- - -",
         "Tiempo/Estado": "-",
@@ -41,14 +41,12 @@ def extraer_estadisticas_partido(context, url_partido):
     page = None
     try:
         page = context.new_page()
-        
-        # 🛡️ Aplicamos camuflaje anti-bot a la subpestaña del partido
         stealth_sync(page)
         
-        # Bloquear recursos pesados de forma ultra-estricta
-        page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "stylesheet", "media"] else route.continue_())
+        # Bloquear recursos pesados visuales
+        page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "stylesheet"] else route.continue_())
         
-        page.goto(url_partido, timeout=8000, wait_until="domcontentloaded")
+        page.goto(url_partido, timeout=9000, wait_until="domcontentloaded")
         page.wait_for_selector("div.detailScore__wrapper", timeout=4000)
         
         marcador_el = page.locator("div.detailScore__wrapper").first
@@ -63,7 +61,7 @@ def extraer_estadisticas_partido(context, url_partido):
         if minuto_el.count() > 0:
             datos_partido["Minuto"] = minuto_el.text_content(timeout=500).strip()
             
-        # Hacer clic en la pestaña de Estadísticas si existe
+        # Hacer clic en Estadísticas
         boton_stats = page.locator("//button[@role='tab' and contains(., 'Estadísticas')]").first
         if boton_stats.count() > 0:
             boton_stats.click(timeout=1000)
@@ -87,9 +85,10 @@ def extraer_estadisticas_partido(context, url_partido):
         pass
     finally:
         if page:
-            page.close()
-            del page  # Eliminar referencia para que Python limpie la RAM
-            gc.collect()  # <--- Forzar vaciado de RAM al instante
+            try:
+                page.close()
+            except Exception:
+                pass
             
     return datos_partido
 
@@ -109,9 +108,10 @@ def contenedor_monitoreo_vivo():
         browser = None
         context = None
         try:
+            # Quitamos --single-process para evitar que la pestaña principal colapse inesperadamente
             browser = p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"] # <-- single-process ahorra mucha RAM
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
             )
             
             context = browser.new_context(
@@ -129,36 +129,49 @@ def contenedor_monitoreo_vivo():
             boton_directo.wait_for(state="visible", timeout=10000)
             boton_directo.click()
             
-            time.sleep(3.0)
+            time.sleep(3.5)
             
             partidos_elementos = main_page.locator("div[id^='g_1_']").all()
             
             if not partidos_elementos:
                 estado_placeholder.warning("No se encontraron partidos en directo activos en este momento.")
             else:
-                # 🛑 Limitamos el escaneo a un máximo de 10-15 partidos simultáneos para que la RAM de Streamlit no explote
-                partidos_a_escanear = partidos_elementos[:15]
+                # 🧠 PASO CLAVE: Mapeamos la info básica rápido y liberamos la página principal
+                datos_basicos_partidos = []
+                for fila in partidos_elementos[:12]: # Limitado a un máximo seguro de 12 partidos en simultáneo
+                    try:
+                        id_completo = fila.get_attribute("id")
+                        id_partido = id_completo.split('_')[-1]
+                        
+                        local_el = fila.locator("div[class*='home'][class*='participant']").first
+                        away_el = fila.locator("div[class*='away'][class*='participant']").first
+                        
+                        nom_local = local_el.text_content().strip() if local_el.count() > 0 else "Local"
+                        nom_visitante = away_el.text_content().strip() if away_el.count() > 0 else "Visitante"
+                        
+                        datos_basicos_partidos.append({
+                            "id": id_partido,
+                            "nombres": f"{nom_local} vs {nom_visitante}"
+                        })
+                    except Exception:
+                        pass
                 
-                estado_placeholder.success(f"Analizando los primeros {len(partidos_a_escanear)} encuentros activos (Optimización de RAM)...")
+                # Cerramos la pestaña principal inmediatamente para liberar muchísima memoria RAM
+                main_page.close()
+                
+                estado_placeholder.success(f"Analizando métricas profundas de {len(datos_basicos_partidos)} encuentros activos...")
                 
                 barra_progreso = barra_placeholder.progress(0)
                 lista_registros_finales = []
                 
-                for idx, fila in enumerate(partidos_a_escanear):
-                    id_completo = fila.get_attribute("id")
-                    id_partido = id_completo.split('_')[-1]
-                    url_match_stats = f"https://www.flashscore.pe/partido/{id_partido}/#/resumen/estadisticas"
-                    
-                    local_el = fila.locator("div[class*='home'][class*='participant']").first
-                    away_el = fila.locator("div[class*='away'][class*='participant']").first
-                    
-                    nom_local = local_el.text_content().strip() if local_el.count() > 0 else "Local"
-                    nom_visitante = away_el.text_content().strip() if away_el.count() > 0 else "Visitante"
+                # Escaneamos los detalles de cada partido usando los IDs guardados
+                for idx, item in enumerate(datos_basicos_partidos):
+                    url_match_stats = f"https://www.flashscore.pe/partido/{item['id']}/#/resumen/estadisticas"
                     
                     resultado_profundo = extraer_estadisticas_partido(context, url_match_stats)
                     
                     registro = {
-                        "Partido en Vivo": f"{nom_local} vs {nom_visitante}",
+                        "Partido en Vivo": item["nombres"],
                         "Marcador": resultado_profundo["Marcador"],
                         "Tiempo/Estado": resultado_profundo["Tiempo/Estado"],
                         "Minuto": resultado_profundo["Minuto"]
@@ -166,27 +179,32 @@ def contenedor_monitoreo_vivo():
                     registro.update(resultado_profundo["Stats"])
                     lista_registros_finales.append(registro)
                     
-                    barra_progreso.progress((idx + 1) / len(partidos_a_escanear))
-                    time.sleep(0.5) # Pausa pequeña para no estresar la CPU
+                    barra_progreso.progress((idx + 1) / len(datos_basicos_partidos))
+                    time.sleep(0.4)
                 
                 barra_placeholder.empty()
                 estado_placeholder.empty()
                 
-                df_final = pd.DataFrame(lista_registros_finales).fillna("-")
-                columnas_fijas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"]
-                columnas_stats = [col for col in df_final.columns if col not in columnas_fijas]
-                df_final = df_final[columnas_fijas + columnas_stats]
-                
-                tabla_placeholder.dataframe(df_final, use_container_width=True)
+                if lista_registros_finales:
+                    df_final = pd.DataFrame(lista_registros_finales).fillna("-")
+                    columnas_fijas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"]
+                    columnas_stats = [col for col in df_final.columns if col not in columnas_fijas]
+                    df_final = df_final[columnas_fijas + columnas_stats]
+                    
+                    tabla_placeholder.dataframe(df_final, use_container_width=True)
+                else:
+                    st.warning("No se pudieron recopilar estadísticas detalladas en esta iteración.")
                 
         except Exception as e:
-            estado_placeholder.error(f"Error en la iteración actual: {str(e)}")
+            estado_placeholder.error(f"Error en la sesión del navegador: {str(e)}")
         finally:
             if context:
-                context.close()
+                try: context.close()
+                except Exception: pass
             if browser:
-                browser.close()
-            gc.collect() # Limpieza final de RAM
+                try: browser.close()
+                except Exception: pass
+            gc.collect()
 
     time.sleep(60)
     st.rerun()
