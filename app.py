@@ -8,7 +8,7 @@ import gc
 
 # --- 1. COMPROBACIÓN E INSTALACIÓN INTERNA CON STEALTH ---
 if 'navegador_configurado' not in st.session_state:
-    with st.spinner("Inicializando entorno balanceado de Playwright... (Solo la primera vez)"):
+    with st.spinner("Inicializando entorno de alta disponibilidad... (Solo la primera vez)"):
         try:
             # Descargamos el binario de chromium correspondiente a Playwright
             subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
@@ -27,11 +27,11 @@ from playwright_stealth import stealth_sync
 # Configuración de la interfaz de Streamlit
 st.set_page_config(page_title="Bot de Estadísticas Final", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo - Flashscore (Anti-Bot Pro)")
-st.subheader("Análisis de métricas en tiempo real con gestión balanceada de memoria")
+st.subheader("Análisis de métricas en tiempo real con tolerancia a redes lentas (Timeout Fix)")
 
 # --- 2. EXTRACCIÓN DE DATOS DE PARTIDOS ---
 def extraer_estadisticas_partido(context, url_partido):
-    """Abre una pestaña nueva de forma segura, extrae la info y la cierra limpiamente."""
+    """Abre una pestaña nueva, extrae la info con tiempos tolerantes y cierra limpiamente."""
     datos_partido = {
         "Marcador": "- - -",
         "Tiempo/Estado": "-",
@@ -43,11 +43,14 @@ def extraer_estadisticas_partido(context, url_partido):
         page = context.new_page()
         stealth_sync(page)
         
-        # Bloquear recursos pesados visuales
+        # Bloquear recursos pesados visuales para ahorrar el máximo de ancho de banda
         page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "stylesheet"] else route.continue_())
         
-        page.goto(url_partido, timeout=9000, wait_until="domcontentloaded")
-        page.wait_for_selector("div.detailScore__wrapper", timeout=4000)
+        # 🔄 Cambiado a wait_until="commit" y timeout de 20 segundos para evitar caídas por red lenta
+        page.goto(url_partido, timeout=20000, wait_until="commit")
+        
+        # Esperamos al contenedor principal con un margen seguro
+        page.wait_for_selector("div.detailScore__wrapper", timeout=6000)
         
         marcador_el = page.locator("div.detailScore__wrapper").first
         if marcador_el.count() > 0:
@@ -61,11 +64,11 @@ def extraer_estadisticas_partido(context, url_partido):
         if minuto_el.count() > 0:
             datos_partido["Minuto"] = minuto_el.text_content(timeout=500).strip()
             
-        # Hacer clic en Estadísticas
+        # Hacer clic en la pestaña de Estadísticas si existe
         boton_stats = page.locator("//button[@role='tab' and contains(., 'Estadísticas')]").first
         if boton_stats.count() > 0:
-            boton_stats.click(timeout=1000)
-            page.wait_for_selector("div[data-testid='wcl-statistics']", timeout=2000)
+            boton_stats.click(timeout=1500)
+            page.wait_for_selector("div[data-testid='wcl-statistics']", timeout=3000)
             
             filas = page.locator("div[data-testid='wcl-statistics']").all()
             for fila in filas:
@@ -82,13 +85,12 @@ def extraer_estadisticas_partido(context, url_partido):
                     datos_partido["Stats"][f"{categoria} (L)"] = val_home
                     datos_partido["Stats"][f"{categoria} (V)"] = val_away
     except Exception:
+        # Si un partido individual falla por red, no rompe la app, solo continúa con los demás
         pass
     finally:
         if page:
-            try:
-                page.close()
-            except Exception:
-                pass
+            try: page.close()
+            except Exception: pass
             
     return datos_partido
 
@@ -108,7 +110,6 @@ def contenedor_monitoreo_vivo():
         browser = None
         context = None
         try:
-            # Quitamos --single-process para evitar que la pestaña principal colapse inesperadamente
             browser = p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
@@ -123,22 +124,22 @@ def contenedor_monitoreo_vivo():
             main_page = context.new_page()
             stealth_sync(main_page)
             
-            main_page.goto("https://www.flashscore.pe/", wait_until="domcontentloaded")
+            # Ampliamos a 25 segundos la carga de la página de inicio para máxima estabilidad
+            main_page.goto("https://www.flashscore.pe/", timeout=25000, wait_until="commit")
             
             boton_directo = main_page.locator("//div[contains(@class, 'filters__text') and text()='EN DIRECTO']")
-            boton_directo.wait_for(state="visible", timeout=10000)
+            boton_directo.wait_for(state="visible", timeout=12000)
             boton_directo.click()
             
-            time.sleep(3.5)
+            time.sleep(4.0) # Tiempo prudencial para el despliegue dinámico de la lista
             
             partidos_elementos = main_page.locator("div[id^='g_1_']").all()
             
             if not partidos_elementos:
                 estado_placeholder.warning("No se encontraron partidos en directo activos en este momento.")
             else:
-                # 🧠 PASO CLAVE: Mapeamos la info básica rápido y liberamos la página principal
                 datos_basicos_partidos = []
-                for fila in partidos_elementos[:12]: # Limitado a un máximo seguro de 12 partidos en simultáneo
+                for fila in partidos_elementos[:12]: # Límite seguro de 12 encuentros simultáneos
                     try:
                         id_completo = fila.get_attribute("id")
                         id_partido = id_completo.split('_')[-1]
@@ -156,7 +157,7 @@ def contenedor_monitoreo_vivo():
                     except Exception:
                         pass
                 
-                # Cerramos la pestaña principal inmediatamente para liberar muchísima memoria RAM
+                # Cerramos la pestaña principal de inmediato para liberar RAM
                 main_page.close()
                 
                 estado_placeholder.success(f"Analizando métricas profundas de {len(datos_basicos_partidos)} encuentros activos...")
@@ -164,7 +165,6 @@ def contenedor_monitoreo_vivo():
                 barra_progreso = barra_placeholder.progress(0)
                 lista_registros_finales = []
                 
-                # Escaneamos los detalles de cada partido usando los IDs guardados
                 for idx, item in enumerate(datos_basicos_partidos):
                     url_match_stats = f"https://www.flashscore.pe/partido/{item['id']}/#/resumen/estadisticas"
                     
@@ -180,7 +180,7 @@ def contenedor_monitoreo_vivo():
                     lista_registros_finales.append(registro)
                     
                     barra_progreso.progress((idx + 1) / len(datos_basicos_partidos))
-                    time.sleep(0.4)
+                    time.sleep(0.5)
                 
                 barra_placeholder.empty()
                 estado_placeholder.empty()
@@ -193,7 +193,7 @@ def contenedor_monitoreo_vivo():
                     
                     tabla_placeholder.dataframe(df_final, use_container_width=True)
                 else:
-                    st.warning("No se pudieron recopilar estadísticas detalladas en esta iteración.")
+                    st.warning("No se pudieron recopilar estadísticas detalladas debido a la latencia de red actual.")
                 
         except Exception as e:
             estado_placeholder.error(f"Error en la sesión del navegador: {str(e)}")
