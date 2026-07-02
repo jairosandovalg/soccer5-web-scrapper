@@ -4,13 +4,12 @@ import streamlit as st
 import pandas as pd
 import time
 import subprocess
-import gc
+import requests
 
-# --- 1. COMPROBACIÓN E INSTALACIÓN INTERNA CON STEALTH ---
+# --- 1. COMPROBACIÓN E INSTALACIÓN INTERNA DIRECTA ---
 if 'navegador_configurado' not in st.session_state:
-    with st.spinner("Inicializando entorno de alta disponibilidad... (Solo la primera vez)"):
+    with st.spinner("Inicializando binarios de Playwright en el servidor... (Solo la primera vez)"):
         try:
-            # Descargamos el binario de chromium correspondiente a Playwright
             subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
             st.session_state['navegador_configurado'] = True
         except Exception as e:
@@ -20,37 +19,74 @@ if 'navegador_configurado' not in st.session_state:
     from playwright.sync_api import sync_playwright
     st.rerun()
 
-# Importaciones seguras una vez garantizado el entorno de la nube
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 # Configuración de la interfaz de Streamlit
 st.set_page_config(page_title="Bot de Estadísticas Final", layout="wide")
-st.title("📊 Monitor de Estadísticas en Vivo - Flashscore (Anti-Bot Pro)")
-st.subheader("Análisis de métricas en tiempo real con tolerancia a redes lentas (Timeout Fix)")
+st.title("📊 Monitor de Estadísticas en Vivo - Flashscore & Telegram")
+st.subheader("Análisis de métricas en tiempo real con alertas automatizadas")
 
-# --- 2. EXTRACCIÓN DE DATOS DE PARTIDOS ---
+# --- 2. FUNCIÓN DE ENVÍO A TELEGRAM (CONFIGURADA) ---
+def enviar_resumen_telegram(df):
+    """Transforma el DataFrame de métricas vivas en un mensaje estructurado y lo envía."""
+    
+    # 🔐 TUS CREDENCIALES DE TELEGRAM
+    TOKEN = "892395866:AAES1dc4LAsedUKUsGR4p5D1SkaMt7nKyes"
+    
+    # ⚠️ REEMPLAZA ESTE TEXTO POR EL NÚMERO QUE TE DIO EL @userinfobot (ej. "123456789")
+    CHAT_ID = "PON_AQUI_EL_NUMERO_DE_USERINFOBOT" 
+    
+    if CHAT_ID == "PON_AQUI_EL_NUMERO_DE_USERINFOBOT":
+        st.sidebar.warning("⚠️ Falta configurar tu CHAT_ID de Telegram en el código.")
+        return
+
+    if not df.empty:
+        mensaje = f"🚀 *ACTUALIZACIÓN EN VIVO* 🚀\n🕒 _Hora:_ {time.strftime('%H:%M:%S')}\n\n"
+        
+        # Iterar sobre las filas para construir alertas compactas por partido
+        for _, fila in df.iterrows():
+            mensaje += f"⚽ *{fila['Partido en Vivo']}*\n"
+            mensaje += f"🏆 *Marcador:* `{fila['Marcador']}` | *Min:* `{fila['Minuto']}`\n"
+            
+            # Extraer estadísticas dinámicas si existen
+            stats_disponibles = []
+            for col in df.columns:
+                if col not in ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"] and fila[col] != "-":
+                    stats_disponibles.append(f"• {col}: {fila[col]}")
+            
+            if stats_disponibles:
+                # Limitamos a mostrar las estadísticas clave para evitar mensajes gigantescos
+                mensaje += "\n".join(stats_disponibles[:6]) + "\n"
+            
+            mensaje += "───────────────────\n"
+        
+        # Envío vía API de Telegram
+        url_api = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": mensaje,
+            "parse_mode": "Markdown"
+        }
+        
+        try:
+            response = requests.post(url_api, json=payload, timeout=10)
+            if response.status_code == 200:
+                st.toast("✅ Resumen enviado con éxito a Telegram", icon="✉️")
+            else:
+                st.sidebar.error(f"Telegram Error: {response.text}")
+        except Exception as e:
+            st.sidebar.error(f"Error de conexión con Telegram: {str(e)}")
+
+# --- 3. EXTRACCIÓN DE DATOS DE PARTIDOS ---
 def extraer_estadisticas_partido(context, url_partido):
-    """Abre una pestaña nueva, extrae la info con tiempos tolerantes y cierra limpiamente."""
-    datos_partido = {
-        "Marcador": "- - -",
-        "Tiempo/Estado": "-",
-        "Minuto": "-",
-        "Stats": {}
-    }
+    datos_partido = {"Marcador": "- - -", "Tiempo/Estado": "-", "Minuto": "-", "Stats": {}}
     page = None
     try:
         page = context.new_page()
-        stealth_sync(page)
-        
-        # Bloquear recursos pesados visuales para ahorrar el máximo de ancho de banda
         page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "stylesheet"] else route.continue_())
         
-        # 🔄 Cambiado a wait_until="commit" y timeout de 20 segundos para evitar caídas por red lenta
-        page.goto(url_partido, timeout=20000, wait_until="commit")
-        
-        # Esperamos al contenedor principal con un margen seguro
-        page.wait_for_selector("div.detailScore__wrapper", timeout=6000)
+        page.goto(url_partido, timeout=7000, wait_until="domcontentloaded")
+        page.wait_for_selector("div.detailScore__wrapper", timeout=4000)
         
         marcador_el = page.locator("div.detailScore__wrapper").first
         if marcador_el.count() > 0:
@@ -64,18 +100,16 @@ def extraer_estadisticas_partido(context, url_partido):
         if minuto_el.count() > 0:
             datos_partido["Minuto"] = minuto_el.text_content(timeout=500).strip()
             
-        # Hacer clic en la pestaña de Estadísticas si existe
         boton_stats = page.locator("//button[@role='tab' and contains(., 'Estadísticas')]").first
         if boton_stats.count() > 0:
-            boton_stats.click(timeout=1500)
-            page.wait_for_selector("div[data-testid='wcl-statistics']", timeout=3000)
+            boton_stats.click(timeout=1000)
+            page.wait_for_selector("div[data-testid='wcl-statistics']", timeout=2000)
             
             filas = page.locator("div[data-testid='wcl-statistics']").all()
             for fila in filas:
                 cat_el = fila.locator("div[data-testid='wcl-statistics-category']").first
                 if cat_el.count() > 0:
                     categoria = cat_el.text_content().strip()
-                    
                     home_el = fila.locator("div[class*='wcl-homeValue']").first
                     away_el = fila.locator("div[class*='wcl-awayValue']").first
                     
@@ -85,93 +119,64 @@ def extraer_estadisticas_partido(context, url_partido):
                     datos_partido["Stats"][f"{categoria} (L)"] = val_home
                     datos_partido["Stats"][f"{categoria} (V)"] = val_away
     except Exception:
-        # Si un partido individual falla por red, no rompe la app, solo continúa con los demás
         pass
     finally:
-        if page:
-            try: page.close()
-            except Exception: pass
-            
+        if page: page.close()
     return datos_partido
 
-# --- 3. CONTENEDOR DINÁMICO AUTOMÁTICO (FRAGMENT) ---
+# --- 4. CONTENEDOR DINÁMICO AUTOMÁTICO (FRAGMENT) ---
 @st.fragment
 def contenedor_monitoreo_vivo():
-    """Este bloque se ejecuta de forma independiente y se auto-refresca cada 60 segundos."""
     st.caption(f"🔄 Última actualización del sistema: **{time.strftime('%H:%M:%S')}** (Próximo escaneo automático en 1 min)")
     
     estado_placeholder = st.empty()
     barra_placeholder = st.empty()
     tabla_placeholder = st.empty()
 
-    estado_placeholder.info("Conectando con la sección EN DIRECTO desde el navegador camuflado...")
+    estado_placeholder.info("Conectando con la sección EN DIRECTO desde el navegador virtual...")
     
     with sync_playwright() as p:
         browser = None
         context = None
         try:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-            )
-            
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={'width': 1280, 'height': 720},
-                locale="es-PE"
-            )
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
+            context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             
             main_page = context.new_page()
-            stealth_sync(main_page)
-            
-            # Ampliamos a 25 segundos la carga de la página de inicio para máxima estabilidad
-            main_page.goto("https://www.flashscore.pe/", timeout=25000, wait_until="commit")
+            main_page.goto("https://www.flashscore.pe/", wait_until="domcontentloaded")
             
             boton_directo = main_page.locator("//div[contains(@class, 'filters__text') and text()='EN DIRECTO']")
-            boton_directo.wait_for(state="visible", timeout=12000)
+            boton_directo.wait_for(state="visible", timeout=10000)
             boton_directo.click()
             
-            time.sleep(4.0) # Tiempo prudencial para el despliegue dinámico de la lista
-            
+            time.sleep(2.5)
             partidos_elementos = main_page.locator("div[id^='g_1_']").all()
             
             if not partidos_elementos:
                 estado_placeholder.warning("No se encontraron partidos en directo activos en este momento.")
             else:
-                datos_basicos_partidos = []
-                for fila in partidos_elementos[:12]: # Límite seguro de 12 encuentros simultáneos
-                    try:
-                        id_completo = fila.get_attribute("id")
-                        id_partido = id_completo.split('_')[-1]
-                        
-                        local_el = fila.locator("div[class*='home'][class*='participant']").first
-                        away_el = fila.locator("div[class*='away'][class*='participant']").first
-                        
-                        nom_local = local_el.text_content().strip() if local_el.count() > 0 else "Local"
-                        nom_visitante = away_el.text_content().strip() if away_el.count() > 0 else "Visitante"
-                        
-                        datos_basicos_partidos.append({
-                            "id": id_partido,
-                            "nombres": f"{nom_local} vs {nom_visitante}"
-                        })
-                    except Exception:
-                        pass
-                
-                # Cerramos la pestaña principal de inmediato para liberar RAM
-                main_page.close()
-                
-                estado_placeholder.success(f"Analizando métricas profundas de {len(datos_basicos_partidos)} encuentros activos...")
+                # Limitar a los primeros 8 partidos para evitar saturación y spam en Telegram
+                partidos_filtrados = partidos_elementos[:8] 
+                estado_placeholder.success(f"Analizando {len(partidos_filtrados)} encuentros activos...")
                 
                 barra_progreso = barra_placeholder.progress(0)
                 lista_registros_finales = []
                 
-                for idx, item in enumerate(datos_basicos_partidos):
-                    url_match_stats = f"https://www.flashscore.pe/partido/{item['id']}/#/resumen/estadisticas"
+                for idx, fila in enumerate(partidos_filtrados):
+                    id_completo = fila.get_attribute("id")
+                    id_partido = id_completo.split('_')[-1]
+                    url_match_stats = f"https://www.flashscore.pe/partido/{id_partido}/#/resumen/estadisticas"
+                    
+                    local_el = fila.locator("div[class*='home'][class*='participant']").first
+                    away_el = fila.locator("div[class*='away'][class*='participant']").first
+                    
+                    nom_local = local_el.text_content().strip() if local_el.count() > 0 else "Local"
+                    nom_visitante = away_el.text_content().strip() if away_el.count() > 0 else "Visitante"
                     
                     resultado_profundo = extraer_estadisticas_partido(context, url_match_stats)
                     
                     registro = {
-                        "Partido en Vivo": item["nombres"],
+                        "Partido en Vivo": f"{nom_local} vs {nom_visitante}",
                         "Marcador": resultado_profundo["Marcador"],
                         "Tiempo/Estado": resultado_profundo["Tiempo/Estado"],
                         "Minuto": resultado_profundo["Minuto"]
@@ -179,8 +184,7 @@ def contenedor_monitoreo_vivo():
                     registro.update(resultado_profundo["Stats"])
                     lista_registros_finales.append(registro)
                     
-                    barra_progreso.progress((idx + 1) / len(datos_basicos_partidos))
-                    time.sleep(0.5)
+                    barra_progreso.progress((idx + 1) / len(partidos_filtrados))
                 
                 barra_placeholder.empty()
                 estado_placeholder.empty()
@@ -191,24 +195,21 @@ def contenedor_monitoreo_vivo():
                     columnas_stats = [col for col in df_final.columns if col not in columnas_fijas]
                     df_final = df_final[columnas_fijas + columnas_stats]
                     
+                    # Mostrar en la web de Streamlit
                     tabla_placeholder.dataframe(df_final, use_container_width=True)
-                else:
-                    st.warning("No se pudieron recopilar estadísticas detalladas debido a la latencia de red actual.")
+                    
+                    # Enviar reporte automático a Telegram
+                    enviar_resumen_telegram(df_final)
                 
         except Exception as e:
             estado_placeholder.error(f"Error en la sesión del navegador: {str(e)}")
         finally:
-            if context:
-                try: context.close()
-                except Exception: pass
-            if browser:
-                try: browser.close()
-                except Exception: pass
-            gc.collect()
+            if context: context.close()
+            if browser: browser.close()
 
     time.sleep(60)
     st.rerun()
 
-# --- 4. RENDERIZADO PRINCIPAL ---
+# --- 5. RENDERIZADO PRINCIPAL ---
 st.write("### 📈 Cuadro de Control General (Actualización Automática)")
 contenedor_monitoreo_vivo()
