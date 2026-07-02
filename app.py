@@ -30,15 +30,9 @@ st.subheader("Análisis de métricas en tiempo real con alertas automatizadas")
 def enviar_resumen_telegram(df):
     """Transforma el DataFrame de métricas vivas en un mensaje estructurado y lo envía."""
     
-    # 🔐 TUS CREDENCIALES DE TELEGRAM
+    # 🔐 TUS CREDENCIALES DE TELEGRAM (Vinculadas a @Soctatbot y tu ID personal de entrega)
     TOKEN = "892395866:AAES1dc4LAsedUKUsGR4p5D1SkaMt7nKyes"
-    
-    # ⚠️ REEMPLAZA ESTE TEXTO POR EL NÚMERO QUE TE DIO EL @userinfobot (ej. "123456789")
-    CHAT_ID = "7272170952" 
-    
-    if CHAT_ID == "7272170952":
-        st.sidebar.warning("⚠️ Falta configurar tu CHAT_ID de Telegram en el código.")
-        return
+    CHAT_ID = "7272170952"  # <-- Tu ID de User Info Get ID configurado de forma definitiva
 
     if not df.empty:
         mensaje = f"🚀 *ACTUALIZACIÓN EN VIVO* 🚀\n🕒 _Hora:_ {time.strftime('%H:%M:%S')}\n\n"
