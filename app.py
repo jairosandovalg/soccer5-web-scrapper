@@ -34,9 +34,9 @@ def enviar_resumen_telegram(df):
     TOKEN = "892395866:AAES1dc4LAsedUKUsGR4p5D1SkaMt7nKyes"
     
     # ⚠️ REEMPLAZA ESTE TEXTO POR EL NÚMERO QUE TE DIO EL @userinfobot (ej. "123456789")
-    CHAT_ID = "PON_AQUI_EL_NUMERO_DE_USERINFOBOT" 
+    CHAT_ID = "7272170952" 
     
-    if CHAT_ID == "PON_AQUI_EL_NUMERO_DE_USERINFOBOT":
+    if CHAT_ID == "7272170952":
         st.sidebar.warning("⚠️ Falta configurar tu CHAT_ID de Telegram en el código.")
         return
 
