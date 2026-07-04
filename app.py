@@ -8,10 +8,9 @@ import requests
 
 # --- 1. COMPROBACIÓN E INSTALACIÓN INTERNA DIRECTA ---
 if 'navegador_configurado' not in st.session_state:
-    with st.spinner("Inicializando binarios y dependencias de Playwright... (Solo la primera vez)"):
+    with st.spinner("Inicializando binarios de Playwright en el servidor... (Solo la primera vez)"):
         try:
-            # Añadimos '--with-deps' para intentar mitigar la falta de librerías en el sistema Linux
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"], check=True)
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
             st.session_state['navegador_configurado'] = True
         except Exception as e:
             st.error(f"Error al inicializar el entorno del navegador: {str(e)}")
@@ -25,15 +24,15 @@ from playwright.sync_api import sync_playwright
 # Configuración de la interfaz de Streamlit
 st.set_page_config(page_title="Bot de Estadísticas Final", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo - Flashscore & Telegram")
-st.subheader("Análisis de métricas en tiempo real con alertas automatizadas y cuotas de Betano")
+st.subheader("Análisis de métricas en tiempo real con alertas automatizadas")
 
 # --- 2. FUNCIÓN DE ENVÍO A TELEGRAM (CONFIGURADA) ---
 def enviar_resumen_telegram(df):
     """Transforma el DataFrame de métricas vivas en un mensaje estructurado y lo envía."""
     
-    # 🔐 TUS CREDENCIALES DE TELEGRAM
+    # 🔐 TUS CREDENCIALES DE TELEGRAM (Vinculadas a @Soctatbot y tu ID personal de entrega)
     TOKEN = "892395866:AAES1dc4LAsedUKUsGR4p5D1SkaMt7nKyes"
-    CHAT_ID = "7272170952"  
+    CHAT_ID = "7272170952"  # <-- Tu ID de User Info Get ID configurado de forma definitiva
 
     if not df.empty:
         mensaje = f"🚀 *ACTUALIZACIÓN EN VIVO* 🚀\n🕒 _Hora:_ {time.strftime('%H:%M:%S')}\n\n"
@@ -42,14 +41,11 @@ def enviar_resumen_telegram(df):
         for _, fila in df.iterrows():
             mensaje += f"⚽ *{fila['Partido en Vivo']}*\n"
             mensaje += f"🏆 *Marcador:* `{fila['Marcador']}` | *Min:* `{fila['Minuto']}`\n"
-            # Incluimos las cuotas de Betano de forma compacta en la cabecera del mensaje
-            mensaje += f"💰 *Betano:* [1: {fila['Betano 1']}] [X: {fila['Betano X']}] [2: {fila['Betano 2']}]\n"
             
             # Extraer estadísticas dinámicas si existen
             stats_disponibles = []
-            columnas_excluidas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto", "Betano 1", "Betano X", "Betano 2"]
             for col in df.columns:
-                if col not in columnas_excluidas and fila[col] != "-":
+                if col not in ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"] and fila[col] != "-":
                     stats_disponibles.append(f"• {col}: {fila[col]}")
             
             if stats_disponibles:
@@ -77,15 +73,7 @@ def enviar_resumen_telegram(df):
 
 # --- 3. EXTRACCIÓN DE DATOS DE PARTIDOS ---
 def extraer_estadisticas_partido(context, url_partido):
-    datos_partido = {
-        "Marcador": "- - -", 
-        "Tiempo/Estado": "-", 
-        "Minuto": "-", 
-        "Betano 1": "-", 
-        "Betano X": "-", 
-        "Betano 2": "-", 
-        "Stats": {}
-    }
+    datos_partido = {"Marcador": "- - -", "Tiempo/Estado": "-", "Minuto": "-", "Stats": {}}
     page = None
     try:
         page = context.new_page()
@@ -94,7 +82,6 @@ def extraer_estadisticas_partido(context, url_partido):
         page.goto(url_partido, timeout=7000, wait_until="domcontentloaded")
         page.wait_for_selector("div.detailScore__wrapper", timeout=4000)
         
-        # 3.1. Datos Básicos
         marcador_el = page.locator("div.detailScore__wrapper").first
         if marcador_el.count() > 0:
             datos_partido["Marcador"] = marcador_el.text_content(timeout=500).strip()
@@ -107,29 +94,6 @@ def extraer_estadisticas_partido(context, url_partido):
         if minuto_el.count() > 0:
             datos_partido["Minuto"] = minuto_el.text_content(timeout=500).strip()
             
-        # 3.2. Extracción de Cuotas en Vivo (Betano) utilizando data-testid estable
-        boton_cuotas = page.locator("//button[@role='tab' and contains(., 'Cuotas')]").first
-        if boton_cuotas.count() > 0:
-            boton_cuotas.click(timeout=1000)
-            page.wait_for_selector("div[data-analytics-element='ODDS_COMPARISONS_INTERACTIVE_ROW']", timeout=2500)
-            
-            # Ubicamos el contenedor estricto que contiene el enlace de Betano
-            fila_betano = page.locator("div[data-analytics-element='ODDS_COMPARISONS_INTERACTIVE_ROW']:has(a[title*='Betano'])").first
-            if fila_betano.count() > 0:
-                # Extraemos los valores con el identificador de pruebas HTML provisto
-                celdas_cuotas = fila_betano.locator("span[data-testid='wcl-oddsValue']").all()
-                
-                # Evaluamos el estado del mercado (si está cerrado/suspendido temporalmente por Flashscore)
-                primer_boton = fila_betano.locator("button[data-testid='wcl-oddsCell']").first
-                mercado_cerrado = primer_boton.get_attribute("data-state") == "closed" if primer_boton.count() > 0 else False
-                
-                if len(celdas_cuotas) >= 3:
-                    prefijo = "🔒 " if mercado_cerrado else ""
-                    datos_partido["Betano 1"] = f"{prefijo}{celdas_cuotas[0].text_content().strip()}"
-                    datos_partido["Betano X"] = f"{prefijo}{celdas_cuotas[1].text_content().strip()}"
-                    datos_partido["Betano 2"] = f"{prefijo}{celdas_cuotas[2].text_content().strip()}"
-            
-        # 3.3. Extracción de Estadísticas
         boton_stats = page.locator("//button[@role='tab' and contains(., 'Estadísticas')]").first
         if boton_stats.count() > 0:
             boton_stats.click(timeout=1000)
@@ -185,6 +149,7 @@ def contenedor_monitoreo_vivo():
             if not partidos_elementos:
                 estado_placeholder.warning("No se encontraron partidos en directo activos en este momento.")
             else:
+                # Limitar a los primeros 8 partidos para evitar saturación y spam en Telegram
                 partidos_filtrados = partidos_elementos[:8] 
                 estado_placeholder.success(f"Analizando {len(partidos_filtrados)} encuentros activos...")
                 
@@ -208,10 +173,7 @@ def contenedor_monitoreo_vivo():
                         "Partido en Vivo": f"{nom_local} vs {nom_visitante}",
                         "Marcador": resultado_profundo["Marcador"],
                         "Tiempo/Estado": resultado_profundo["Tiempo/Estado"],
-                        "Minuto": resultado_profundo["Minuto"],
-                        "Betano 1": resultado_profundo["Betano 1"],
-                        "Betano X": resultado_profundo["Betano X"],
-                        "Betano 2": resultado_profundo["Betano 2"]
+                        "Minuto": resultado_profundo["Minuto"]
                     }
                     registro.update(resultado_profundo["Stats"])
                     lista_registros_finales.append(registro)
@@ -223,16 +185,14 @@ def contenedor_monitoreo_vivo():
                 
                 if lista_registros_finales:
                     df_final = pd.DataFrame(lista_registros_finales).fillna("-")
-                    
-                    # Reordenamos las columnas para colocar las cuotas al lado de la información clave
-                    columnas_fijas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto", "Betano 1", "Betano X", "Betano 2"]
+                    columnas_fijas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"]
                     columnas_stats = [col for col in df_final.columns if col not in columnas_fijas]
                     df_final = df_final[columnas_fijas + columnas_stats]
                     
-                    # Renderizado en Streamlit
+                    # Mostrar en la web de Streamlit
                     tabla_placeholder.dataframe(df_final, use_container_width=True)
                     
-                    # Envío automático a Telegram
+                    # Enviar reporte automático a Telegram
                     enviar_resumen_telegram(df_final)
                 
         except Exception as e:
