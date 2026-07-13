@@ -7,19 +7,25 @@ import subprocess
 import requests
 
 # --- 1. COMPROBACIÓN E INSTALACIÓN INTERNA DIRECTA ---
-if 'navegador_configurado' not in st.session_state:
-    with st.spinner("Inicializando binarios de Playwright en el servidor... (Solo la primera vez)"):
-        try:
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-            st.session_state['navegador_configurado'] = True
-        except Exception as e:
-            st.error(f"Error al inicializar el entorno del navegador: {str(e)}")
-            st.stop()
-            
-    from playwright.sync_api import sync_playwright
-    st.rerun()
+def preparar_navegador():
+    if 'navegador_configurado' not in st.session_state:
+        with st.spinner("Descargando navegador Firefox..."):
+            try:
+                # Forzamos la instalación de firefox
+                subprocess.run([sys.executable, "-m", "playwright", "install", "firefox"], check=True)
+                
+                # Verificamos si realmente existe el ejecutable
+                # La ruta suele variar, pero el comando de arriba debería colocarlo en el caché
+                st.session_state['navegador_configurado'] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error crítico de instalación: {e}")
+                st.stop()
+
+preparar_navegador()
 
 from playwright.sync_api import sync_playwright
+
 
 # Configuración de la interfaz de Streamlit
 st.set_page_config(page_title="Bot de Estadísticas Final", layout="wide")
