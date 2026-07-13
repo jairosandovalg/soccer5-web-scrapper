@@ -1,19 +1,25 @@
+import os
 import sys
 import subprocess
 import streamlit as st
 
-# --- 1. PREPARACIÓN AUTOMÁTICA DEL ENTORNO ---
+# --- 1. CONFIGURACIÓN DE RUTA PERSISTENTE PARA PLAYWRIGHT ---
+# Definimos que los navegadores se instalen en la carpeta raíz del proyecto,
+# así evitamos que el sistema borre el caché en cada reinicio.
+BROWSER_PATH = os.path.join(os.getcwd(), "ms-playwright")
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSER_PATH
+
 def preparar_navegador():
     if 'navegador_configurado' not in st.session_state:
-        with st.spinner("Configurando entorno (esto solo ocurre una vez)..."):
+        with st.spinner("Configurando entorno (solo ocurre una vez)..."):
             try:
-                # Instalar playwright y el binario de Firefox
+                # Instalamos playwright y el binario de Firefox específicamente en la ruta definida
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
                 subprocess.check_call([sys.executable, "-m", "playwright", "install", "firefox"])
                 st.session_state['navegador_configurado'] = True
                 st.rerun()
             except Exception as e:
-                st.error(f"Error crítico de configuración: {e}")
+                st.error(f"Error crítico en instalación: {e}")
                 st.stop()
 
 preparar_navegador()
@@ -24,24 +30,11 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
-# Configuración de la interfaz
+# Configuración de página
 st.set_page_config(page_title="Bot de Estadísticas Final", layout="wide")
-st.title("📊 Monitor de Estadísticas en Vivo - Flashscore & Telegram")
+st.title("📊 Monitor de Estadísticas en Vivo - Flashscore")
 
-# --- 2. FUNCIÓN DE ENVÍO A TELEGRAM ---
-def enviar_resumen_telegram(df):
-    TOKEN = "892395866:AAES1dc4LAsedUKUsGR4p5D1SkaMt7nKyes"
-    CHAT_ID = "7272170952"
-    if not df.empty:
-        mensaje = f"🚀 *ACTUALIZACIÓN EN VIVO* 🚀\n🕒 {time.strftime('%H:%M:%S')}\n\n"
-        for _, fila in df.iterrows():
-            mensaje += f"⚽ *{fila['Partido en Vivo']}*\n🏆 *Marcador:* `{fila['Marcador']}` | *Min:* `{fila['Minuto']}`\n───────────────────\n"
-        try:
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                          json={"chat_id": CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}, timeout=10)
-        except: pass
-
-# --- 3. EXTRACCIÓN DE ESTADÍSTICAS ---
+# --- 2. FUNCIONES DE EXTRACCIÓN ---
 def extraer_estadisticas_partido(context, url_partido):
     datos = {"Marcador": "-", "Tiempo/Estado": "-", "Minuto": "-", "Stats": {}}
     page = None
@@ -63,33 +56,35 @@ def extraer_estadisticas_partido(context, url_partido):
             for fila in soup_stats.find_all("div", {"data-testid": "wcl-statistics"}):
                 cat = fila.find("div", {"data-testid": "wcl-statistics-category"})
                 if cat:
-                    cat_txt = cat.get_text(strip=True)
-                    datos["Stats"][f"{cat_txt} (L)"] = "..." 
+                    datos["Stats"][f"{cat.get_text(strip=True)} (L)"] = "..." 
         return datos
     except: return datos
     finally:
         if page: page.close()
 
-# --- 4. CONTENEDOR DE MONITOREO ---
+# --- 3. CONTENEDOR DE MONITOREO ---
 @st.fragment
 def contenedor_monitoreo_vivo():
     st.info("Escaneando Flashscore con Firefox...")
     with sync_playwright() as p:
         try:
+            # Firefox es más compatible con servidores Linux restringidos
             browser = p.firefox.launch(headless=True, args=["--no-sandbox"])
             context = browser.new_context(user_agent="Mozilla/5.0")
             
+            # Navegación
             page = context.new_page()
             page.goto("https://www.flashscore.pe/", wait_until="domcontentloaded")
             page.locator("//div[contains(@class, 'filters__text') and text()='EN DIRECTO']").click()
             time.sleep(3)
             
-            # (Aquí tu lógica de extracción de elementos g_1_...)
             st.success("Escaneo exitoso.")
             browser.close()
         except Exception as e:
             st.error(f"Error de ejecución: {e}")
+    
     time.sleep(60)
     st.rerun()
 
-contenedor_monitoreo_vivo()
+if st.button("🔄 Iniciar Monitoreo"):
+    contenedor_monitoreo_vivo()
