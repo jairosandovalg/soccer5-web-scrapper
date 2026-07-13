@@ -6,19 +6,13 @@ import subprocess
 # Esto evita errores de "missing requirements" al instalar todo desde el script
 def preparar_entorno():
     if 'entorno_listo' not in st.session_state:
-        with st.spinner("Configurando binarios y dependencias del sistema..."):
-            try:
-                # 1. Instalar la librería
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-                # 2. Instalar el navegador
-                subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-                # 3. ESTA ES LA CLAVE: Instalar dependencias del sistema que faltan
-                subprocess.check_call([sys.executable, "-m", "playwright", "install-deps"])
-                
-                st.session_state['entorno_listo'] = True
-            except Exception as e:
-                st.error(f"Error crítico: {e}")
-                st.stop()
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+            # Cambia 'chromium' por 'firefox'
+            subprocess.check_call([sys.executable, "-m", "playwright", "install", "firefox"])
+            st.session_state['entorno_listo'] = True
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 # Ejecutar preparación antes de importar librerías de terceros
 import streamlit as st
