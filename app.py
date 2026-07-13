@@ -6,14 +6,18 @@ import subprocess
 # Esto evita errores de "missing requirements" al instalar todo desde el script
 def preparar_entorno():
     if 'entorno_listo' not in st.session_state:
-        with st.spinner("Preparando entorno de ejecución..."):
+        with st.spinner("Configurando binarios y dependencias del sistema..."):
             try:
-                # Instalar playwright y navegadores si no están presentes
+                # 1. Instalar la librería
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+                # 2. Instalar el navegador
                 subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+                # 3. ESTA ES LA CLAVE: Instalar dependencias del sistema que faltan
+                subprocess.check_call([sys.executable, "-m", "playwright", "install-deps"])
+                
                 st.session_state['entorno_listo'] = True
             except Exception as e:
-                st.error(f"Error crítico al preparar el entorno: {e}")
+                st.error(f"Error crítico: {e}")
                 st.stop()
 
 # Ejecutar preparación antes de importar librerías de terceros
