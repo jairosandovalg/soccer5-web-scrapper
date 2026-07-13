@@ -29,16 +29,27 @@ st.set_page_config(page_title="Bot de Estadísticas", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo")
 
 # --- 2. FUNCIONES DE LÓGICA ---
-def extraer_estadisticas_partido(context, url_partido):
-    datos = {"Marcador": "-", "Tiempo": "-", "Minuto": "-", "Stats": {}}
-    page = None
+import requests
+from bs4 import BeautifulSoup
+
+def extraer_estadisticas_partido(url_partido):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.flashscore.pe/"
+    }
+    
     try:
-        page = context.new_page()
-        page.goto(url_partido, timeout=10000, wait_until="domcontentloaded")
+        # Usamos requests en lugar de un navegador virtual
+        response = requests.get(url_partido, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.content, "html.parser")
         
-        soup = BeautifulSoup(page.content(), "html.parser")
-        score = soup.select_one("div.detailScore__wrapper")
-        if score: datos["Marcador"] = score.get_text(strip=True)
+        datos_partido = {"Marcador": "-", "Stats": {}}
+        
+        # Lógica para extraer datos con BeautifulSoup...
+        # (Ajusta los selectores CSS si es necesario)
+        return datos_partido
+    except Exception as e:
+        return None
         
         # ... (Mantén aquí tu lógica de extracción existente) ...
     except Exception: pass
