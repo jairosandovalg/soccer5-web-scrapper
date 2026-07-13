@@ -1,5 +1,5 @@
-streamlit
+streamlit>=1.30.0
 pandas
-playwright
 requests
 beautifulsoup4
+playwright>=1.40.0
