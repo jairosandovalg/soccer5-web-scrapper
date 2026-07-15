@@ -154,7 +154,7 @@ if st.button("🔄 Ejecutar Escaneo Completo y Generar Tabla"):
                         registro = {
                             "Partido en Vivo": f"{nom_local} vs {nom_visitante}",
                             "Marcador": resultado_profundo["Marcador"],
-                            "Cuotas": resultado_profundo["Cuotas"]
+                            "Cuotas": resultado_profundo["Cuotas"],
                             "Tiempo/Estado": resultado_profundo["Tiempo/Estado"],
                             "Minuto": resultado_profundo["Minuto"]
                         }
