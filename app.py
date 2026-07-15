@@ -167,13 +167,18 @@ if st.button("🔄 Ejecutar Escaneo Completo y Generar Tabla"):
                     
                     df_final = pd.DataFrame(lista_registros_finales).fillna("-")
                     
-                    columnas_fijas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"]
-                    columnas_stats = [col for col in df_final.columns if col not in columnas_fijas]
-                    df_final = df_final[columnas_fijas + columnas_stats]
-                    
-                    st.write("### 📈 Cuadro de Control General")
-                    st.dataframe(df_final, use_container_width=True)
-                    st.balloons()
+                    # --- AQUÍ ESTÁ LA SOLUCIÓN ---
+                    if not df_final.empty:
+                        columnas_fijas = ["Partido en Vivo", "Marcador", "Tiempo/Estado", "Minuto"]
+                        # Filtramos las columnas que realmente existen en el DF
+                        columnas_stats = [col for col in df_final.columns if col not in columnas_fijas]
+                        df_final = df_final[columnas_fijas + columnas_stats]
+                        
+                        st.write("### 📈 Cuadro de Control General")
+                        st.dataframe(df_final, use_container_width=True)
+                        st.balloons()
+                    else:
+                        st.warning("Se escanearon los partidos, pero no se extrajeron datos válidos de estadísticas.")
                     
             except Exception as e:
                 st.error(f"Fallo crítico en el motor de Playwright: {str(e)}")
