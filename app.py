@@ -150,17 +150,19 @@ if st.button("🔄 Ejecutar Escaneo Completo y Generar Tabla"):
                         nom_visitante = visitante_div.get_text(strip=True) if visitante_div else "Visitante"
                         
                         resultado_profundo = extraer_estadisticas_partido(context, url_match_stats)
+                        estado = resultado_profundo["Tiempo/Estado"].lower().strip()
+                        tiene_stats = len(resultado_profundo["Stats"]) > 0
                         
-                        registro = {
-                            "Partido en Vivo": f"{nom_local} vs {nom_visitante}",
-                            "Marcador": resultado_profundo["Marcador"],
-                            "Cuotas": resultado_profundo["Cuotas"],
-                            "Tiempo/Estado": resultado_profundo["Tiempo/Estado"],
-                            "Minuto": resultado_profundo["Minuto"]
-                        }
-                        registro.update(resultado_profundo["Stats"])
-                        lista_registros_finales.append(registro)
-                        
+                        if "final" not in estado and tiene_stats:
+                            registro = {
+                                "Partido en Vivo": f"{nom_local} vs {nom_visitante}",
+                                "Marcador": resultado_profundo["Marcador"],
+                                "Cuotas": resultado_profundo["Cuotas"],
+                                "Tiempo/Estado": resultado_profundo["Tiempo/Estado"],
+                                "Minuto": resultado_profundo["Minuto"]
+                            }
+                            registro.update(resultado_profundo["Stats"])
+                            lista_registros_finales.append(registro)
                         barra_progreso.progress((idx + 1) / len(partidos_en_vivo))
                     
                     df_final = pd.DataFrame(lista_registros_finales).fillna("-")
