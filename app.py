@@ -29,40 +29,33 @@ def extraer_estadisticas_partido(playwright_context, url_partido):
     try:
         page = playwright_context.new_page()
         page.goto(url_partido, timeout=25000, wait_until="domcontentloaded")
-        
-        # Espera forzada para asegurar que los elementos dinámicos carguen
-        # Primero esperamos al score, luego buscamos los botones de cuotas
         page.wait_for_selector("div.detailScore__wrapper", timeout=10000)
+        
         try:
             page.wait_for_selector("button[data-analytics-bookmaker-id='660']", timeout=5000)
-            page.wait_for_timeout(1500) # Pausa de estabilización para valores renderizados
-        except:
-            pass 
+            page.wait_for_timeout(1500)
+        except: pass 
 
         soup = BeautifulSoup(page.content(), "html.parser")
         
-        # Marcador, Tiempo y Minuto
-        score_wrapper = soup.select_one("div.detailScore__wrapper")
-        if score_wrapper: datos_partido["Marcador"] = score_wrapper.get_text(strip=True)
+        score = soup.select_one("div.detailScore__wrapper")
+        if score: datos_partido["Marcador"] = score.get_text(strip=True)
         
-        status_span = soup.select_one("span.fixedHeaderDuel__detailStatus")
-        if status_span: datos_partido["Tiempo/Estado"] = status_span.get_text(strip=True)
+        status = soup.select_one("span.fixedHeaderDuel__detailStatus")
+        if status: datos_partido["Tiempo/Estado"] = status.get_text(strip=True)
         
-        minuto_span = soup.select_one("span.eventTime")
-        if minuto_span: datos_partido["Minuto"] = minuto_span.get_text(strip=True)
+        minuto = soup.select_one("span.eventTime")
+        if minuto: datos_partido["Minuto"] = minuto.get_text(strip=True)
 
-        # Captura precisa de Cuotas (Botones Betano)
         botones = soup.find_all("button", {"data-analytics-bookmaker-id": "660"})
         valores = []
         for btn in botones:
             span = btn.find("span", {"data-testid": "wcl-oddsValue"})
-            if span:
-                valores.append(span.get_text(strip=True))
+            if span: valores.append(span.get_text(strip=True))
         
         if len(valores) >= 3:
             datos_partido["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
 
-        # Estadísticas
         selector_boton = "//button[@role='tab' and contains(., 'Estadísticas')]"
         if page.locator(selector_boton).count() > 0:
             page.locator(selector_boton).first.click(force=True)
@@ -75,8 +68,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido):
                     v = fila.find("div", class_=lambda x: x and 'wcl-awayValue' in x)
                     datos_partido["Stats"][f"{cat.get_text(strip=True)} (L)"] = h.get_text(strip=True) if h else "0"
                     datos_partido["Stats"][f"{cat.get_text(strip=True)} (V)"] = v.get_text(strip=True) if v else "0"
-    except:
-        pass
+    except: pass
     finally:
         if page: page.close()
     return datos_partido
@@ -106,14 +98,21 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                 bar = st.progress(0)
                 for i, p_div in enumerate(partidos[:8]):
                     id_p = p_div.get('id').split('_')[-1]
+                    
+                    # Extraer nombres de equipos desde la lista principal
+                    h_team = p_div.find("div", class_=lambda c: c and "home" in c.lower() and "participant" in c.lower())
+                    a_team = p_div.find("div", class_=lambda c: c and "away" in c.lower() and "participant" in c.lower())
+                    nombre_partido = f"{h_team.get_text(strip=True) if h_team else 'Local'} vs {a_team.get_text(strip=True) if a_team else 'Visitante'}"
+                    
                     url = f"https://www.flashscore.pe/partido/{id_p}/#/resumen/estadisticas"
                     data = extraer_estadisticas_partido(context, url)
                     
-                    reg = {"ID": id_p, **data}
+                    # Estructura del registro con "Partido en Vivo"
+                    reg = {"Partido en Vivo": nombre_partido, "ID": id_p, **data}
                     reg.update(data.pop("Stats"))
                     res.append(reg)
                     bar.progress((i + 1) / len(partidos[:8]))
                 
-                st.dataframe(pd.DataFrame(res).fillna("-"))
+                st.dataframe(pd.DataFrame(res).fillna("-"), use_container_width=True)
                 st.balloons()
             browser.close()
