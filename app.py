@@ -65,7 +65,28 @@ def extraer_estadisticas_partido(playwright_context, url_partido):
             odds = betano.find_all("span", {"data-testid": "wcl-oddsValue"})
             if len(odds) >= 3:
                 datos_partido["Cuotas"] = f"1:{odds[0].get_text()} X:{odds[1].get_text()} 2:{odds[2].get_text()}"        
+
+        # Reemplaza tu bloque de extracción de cuotas por este:
+        
+        # Buscamos todos los botones que pertenecen a Betano (ID 660)
+        botones_betano = soup.find_all("button", {"data-analytics-bookmaker-id": "660"})
+        
+        if len(botones_betano) >= 3:
+            # Extraemos el texto del span con data-testid="wcl-oddsValue" dentro de cada botón
+            cuotas = []
+            for btn in botones_betano:
+                span_valor = btn.find("span", {"data-testid": "wcl-oddsValue"})
+                if span_valor:
+                    cuotas.append(span_valor.get_text(strip=True))
             
+            if len(cuotas) >= 3:
+                datos_partido["Cuotas"] = f"1:{cuotas[0]} X:{cuotas[1]} 2:{cuotas[2]}"
+
+
+
+
+
+
         # Captura de Tiempo/Estado
         status_span = soup.select_one("span.fixedHeaderDuel__detailStatus")
         if status_span:
