@@ -108,9 +108,19 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                     data = extraer_estadisticas_partido(context, url)
                     
                     # Estructura del registro con "Partido en Vivo"
-                    reg = {"Partido en Vivo": nombre_partido, "ID": id_p, **data}
-                    reg.update(data.pop("Stats"))
-                    res.append(reg)
+                    stats_dict = data.pop("Stats", {}) #Se agrego
+                    reg = {"Partido en Vivo": nombre_partido, 
+                           #"ID": id_p, 
+                           "Marcador": data["Marcador"],
+                           "Cuotas": data["Cuotas"],
+                            "Tiempo/Estado": data["Tiempo/Estado"],
+                            "Minuto": data["Minuto"]
+                           #**data
+                          }
+                    #reg.update(data.pop("Stats"))
+                    reg.update(stats_dict)
+                    res.append(reg)    
+
                     bar.progress((i + 1) / len(partidos[:8]))
                 
                 st.dataframe(pd.DataFrame(res).fillna("-"), use_container_width=True)
