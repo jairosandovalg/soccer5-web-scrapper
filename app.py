@@ -22,8 +22,8 @@ def extraer_estadisticas_partido(playwright_context, url_partido):
         "Marcador": "- - -",
         "Cuotas": "- - -",
         "Tiempo/Estado": "-",
-        "Minuto": "-",  
-        "Stats": {}
+        "Minuto": "-"#,
+        #"Stats": {}
     }
     page = None
     try:
