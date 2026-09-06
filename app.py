@@ -96,7 +96,7 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
             if partidos:
                 res = []
                 bar = st.progress(0)
-                for i, p_div in enumerate(partidos[:8]):
+                for i, p_div in enumerate(partidos):
                     id_p = p_div.get('id').split('_')[-1]
                     
                     # Extraer nombres de equipos desde la lista principal
