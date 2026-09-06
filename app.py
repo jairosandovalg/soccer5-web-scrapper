@@ -121,7 +121,7 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                     reg.update(stats_dict)
                     res.append(reg)    
 
-                    bar.progress((i + 1) / len(partidos[:8]))
+                    bar.progress((i + 1) / len(partidos))
                 
                 st.dataframe(pd.DataFrame(res).fillna("-"), use_container_width=True)
                 st.balloons()
