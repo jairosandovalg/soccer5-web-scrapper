@@ -96,7 +96,7 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
             if partidos:
                 res = []
                 bar = st.progress(0)
-                for i, p_div in enumerate(partidos):
+                for i, p_div in enumerate(partidos[:10]):
                     id_p = p_div.get('id').split('_')[-1]
                     
                     # Extraer nombres de equipos desde la lista principal
@@ -121,7 +121,7 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                     reg.update(stats_dict)
                     res.append(reg)    
 
-                    bar.progress((i + 1) / len(partidos))
+                    bar.progress((i + 1) / len(partidos[:10]))
                 
                 st.dataframe(pd.DataFrame(res).fillna("-"), use_container_width=True)
                 st.balloons()
