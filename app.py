@@ -5,7 +5,7 @@ import sys
 import time
 from playwright.sync_api import sync_playwright
 
-# --- CONFIGURACIÓN E INSTALACIÓN AUTOMÁTICA DE CHROMIUM ---
+# --- CONFIGURACIÓN E INSTALACIÓN DE PLAYWRIGHT ---
 @st.cache_resource
 def instalar_navegadores_playwright():
     try:
@@ -21,19 +21,20 @@ def instalar_navegadores_playwright():
 instalar_navegadores_playwright()
 
 
-# --- FUNCIÓN PARA EXTRAER ESTADÍSTICAS DEL DETALLE DEL PARTIDO ---
+# --- EXTRACCIÓN GARANTIZADA: CUOTAS PRIMERO, LUEGO ESTADÍSTICAS ---
 def extraer_detalle_partido(page, id_partido):
-    url = f"https://www.flashscore.pe/partido/{id_partido}/#/resumen/estadisticas"
+    url = f"https://www.flashscore.pe/partido/{id_partido}/"
     
     resultado = {
         "Marcador": "- - -",
+        "Cuotas": "- - -",
         "Tiempo/Estado": "-",
         "Minuto": "-",
         "Stats": {}
     }
 
     try:
-        page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        page.goto(url, timeout=35000, wait_until="domcontentloaded")
 
         # 1. Esperar encabezado del partido
         try:
@@ -41,18 +42,67 @@ def extraer_detalle_partido(page, id_partido):
         except Exception:
             pass
 
-        # 2. Forzar clic en la pestaña "Estadísticas" si no está activa
+        # 2. PASO CRÍTICO: EXTRAER CUOTAS ANTES DE CUALQUIER CLIC
+        # Esperar a que el bloque o celdas de cuotas aparezcan en el DOM
+        try:
+            page.wait_for_selector('[data-testid="wcl-oddsValue"], [data-analytics-context="widget-match-summary-odds"]', timeout=3500)
+        except Exception:
+            pass
+
+        cuotas_extraidas = page.evaluate('''() => {
+            // Estrategia 1: Buscar botones semánticos 1, X, 2
+            const c1 = document.querySelector('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_1"] [data-testid="wcl-oddsValue"]');
+            const cX = document.querySelector('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_2"] [data-testid="wcl-oddsValue"]');
+            const c2 = document.querySelector('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_3"] [data-testid="wcl-oddsValue"]');
+
+            if (c1 && cX && c2) {
+                const v1 = c1.innerText.trim();
+                const vx = cX.innerText.trim();
+                const v2 = c2.innerText.trim();
+                if (v1 && vx && v2 && !isNaN(parseFloat(v1))) {
+                    return `1:${v1} X:${vx} 2:${v2}`;
+                }
+            }
+
+            // Estrategia 2: Fila contenedora wclOddsRow
+            const fila = document.querySelector(".wclOddsRow, [class*='wclOddsRow']");
+            if (fila) {
+                const vals = Array.from(fila.querySelectorAll('[data-testid="wcl-oddsValue"]'))
+                                  .map(el => el.innerText.trim())
+                                  .filter(t => t && !isNaN(parseFloat(t)));
+                if (vals.length >= 3) {
+                    return `1:${vals[0]} X:${vals[1]} 2:${vals[2]}`;
+                }
+            }
+
+            // Estrategia 3: Cualquier bloque widget-match-summary-odds
+            const bloque = document.querySelector('[data-analytics-context="widget-match-summary-odds"]');
+            if (bloque) {
+                const vals = Array.from(bloque.querySelectorAll('[data-testid="wcl-oddsValue"]'))
+                                  .map(el => el.innerText.trim())
+                                  .filter(t => t && !isNaN(parseFloat(t)));
+                if (vals.length >= 3) {
+                    return `1:${vals[0]} X:${vals[1]} 2:${vals[2]}`;
+                }
+            }
+
+            return "- - -";
+        }''')
+        
+        resultado["Cuotas"] = cuotas_extraidas
+
+        # 3. NAVEGAR A ESTADÍSTICAS
         try:
             tab_stats = page.locator('a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")')
             if tab_stats.count() > 0:
                 clases = tab_stats.first.get_attribute("class") or ""
                 if "active" not in clases:
                     tab_stats.first.click(force=True)
-                    time.sleep(1)
+                    time.sleep(0.8)
         except Exception:
             pass
 
-        # 3. Asegurar que la sub-pestaña "Partido" (alias 74) esté seleccionada para ver todo el encuentro
+        # Asegurar sub-pestaña "Partido" (alias 74)
         try:
             tab_partido_completo = page.locator('a[data-analytics-alias="74"], a:has-text("Partido")')
             if tab_partido_completo.count() > 0:
@@ -63,16 +113,12 @@ def extraer_detalle_partido(page, id_partido):
         except Exception:
             pass
 
-        # 4. Esperar a que el contenedor de estadísticas renderice
+        # 4. ESPERAR Y EXTRAER ESTADÍSTICAS PRINCIPALES
         try:
-            page.wait_for_selector(
-                '[data-testid="statGroup"], [data-testid="wcl-statistics"], .tabContent__match-statistics',
-                timeout=5000
-            )
+            page.wait_for_selector('[data-testid="statGroup"], [data-testid="wcl-statistics"]', timeout=5000)
         except Exception:
             time.sleep(1)
 
-        # 5. Extracción directa del DOM renderizado con JavaScript
         payload = page.evaluate('''() => {
             const data = {
                 marcador: "- - -",
@@ -81,18 +127,16 @@ def extraer_detalle_partido(page, id_partido):
                 stats: {}
             };
 
-            // Marcador
             const elMarcador = document.querySelector("div.detailScore__wrapper");
             if (elMarcador) data.marcador = elMarcador.innerText.replace(/\\n/g, " ").trim();
 
-            // Tiempo y Minuto
             const elTiempo = document.querySelector("span.fixedHeaderDuel__detailStatus");
             if (elTiempo) data.tiempo = elTiempo.innerText.trim();
 
             const elMinuto = document.querySelector("span.eventTime");
             if (elMinuto) data.minuto = elMinuto.innerText.trim();
 
-            // Ubicar el grupo de Estadísticas Principales
+            // Ubicar exclusivamente el bloque de Estadísticas Principales
             const grupos = Array.from(document.querySelectorAll('[data-testid="statGroup"]'));
             let targetGroup = grupos.find(g => {
                 const header = g.querySelector('[data-testid="wcl-headerSection-text"]');
@@ -100,7 +144,7 @@ def extraer_detalle_partido(page, id_partido):
             }) || grupos[0] || document.querySelector('.section--teamStats') || document.body;
 
             if (targetGroup) {
-                // A. Filas estándar (xG, Posesión, Pases, Faltas, etc.)
+                // Filas estándar
                 const filas = targetGroup.querySelectorAll('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]');
                 filas.forEach(f => {
                     const nombreEl = f.querySelector('[class*="wcl-name_"]') || f.querySelector('[class*="wcl-label_"]') || f.querySelector('[data-testid*="category"]');
@@ -114,7 +158,7 @@ def extraer_detalle_partido(page, id_partido):
                     }
                 });
 
-                // B. Remates a puerta (barras)
+                // Barras de remates
                 const shotBars = targetGroup.querySelectorAll('[class*="wcl-shotOnTargetStats_"]');
                 shotBars.forEach(sb => {
                     const lbl = sb.querySelector('[class*="wcl-label_"]');
@@ -126,7 +170,7 @@ def extraer_detalle_partido(page, id_partido):
                     }
                 });
 
-                // C. Córneres y Tarjetas con SVG
+                // Córneres y tarjetas
                 const badges = targetGroup.querySelectorAll('[class*="wcl-incidentValueBadge_"]');
                 badges.forEach(b => {
                     const spans = Array.from(b.querySelectorAll("span")).map(s => s.innerText.trim());
@@ -163,7 +207,7 @@ st.set_page_config(page_title="Monitor de Estadísticas en Vivo", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo")
 
 if st.button("🔄 Ejecutar Escaneo Completo"):
-    with st.spinner("Conectando y analizando partidos en vivo..."):
+    with st.spinner("Escaneando datos y cuotas en tiempo real..."):
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -180,7 +224,6 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                 viewport={"width": 1366, "height": 768}
             )
 
-            # Evitar marcas de bot
             context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
             main = context.new_page()
@@ -192,29 +235,18 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                 btn_live = main.locator("//div[contains(@class, 'filters__text') and text()='EN DIRECTO']")
                 btn_live.wait_for(timeout=15000)
                 btn_live.click()
-                time.sleep(3)
+                time.sleep(2.5)
 
-                # 1. Extraer TODOS los datos base y CUOTAS directamente de la pantalla principal
-                # En la pantalla principal las cuotas de cada fila son estables y no se pierden al navegar
+                # Obtener listado de partidos
                 partidos_base = main.evaluate('''() => {
                     const filas = Array.from(document.querySelectorAll("div[id^='g_1_']"));
                     return filas.map(f => {
                         const h = f.querySelector("div[class*='home'][class*='participant']");
                         const a = f.querySelector("div[class*='away'][class*='participant']");
-                        const nombre = `${h ? h.innerText.trim() : 'Local'} vs ${a ? a.innerText.trim() : 'Visitante'}`;
-                        const id = f.id.replace("g_1_", "");
-
-                        // Extraer Cuotas 1X2 directamente de la fila principal
-                        let cuotas = "- - -";
-                        const celdas = Array.from(f.querySelectorAll('[data-testid="wcl-oddsValue"], [class*="odds__value"]'))
-                                            .map(el => el.innerText.trim())
-                                            .filter(txt => txt && !isNaN(parseFloat(txt)));
-
-                        if (celdas.length >= 3) {
-                            cuotas = `1:${celdas[0]} X:${celdas[1]} 2:${celdas[2]}`;
-                        }
-
-                        return { id, nombre, cuotas };
+                        return {
+                            id: f.id.replace("g_1_", ""),
+                            nombre: `${h ? h.innerText.trim() : 'Local'} vs ${a ? a.innerText.trim() : 'Visitante'}`
+                        };
                     });
                 }''')
 
@@ -223,7 +255,6 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                     limite = min(len(partidos_base), 10)
                     progreso = st.progress(0)
 
-                    # Reutilizar una página para extraer las estadísticas de cada partido
                     detalle_page = context.new_page()
 
                     for i, base in enumerate(partidos_base[:limite]):
@@ -232,7 +263,7 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                         fila = {
                             "Partido en Vivo": base["nombre"],
                             "Marcador": detalle["Marcador"],
-                            "Cuotas": base["cuotas"],  # Cuota garantizada desde la lista principal
+                            "Cuotas": detalle["Cuotas"],
                             "Tiempo/Estado": detalle["Tiempo/Estado"],
                             "Minuto": detalle["Minuto"]
                         }
