@@ -6,7 +6,7 @@ import time
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
-# --- CONFIGURACIÓN E INSTALACIÓN DE PLAYWRIGHT ---
+# --- INSTALACIÓN AUTOMÁTICA DE CHROMIUM EN STREAMLIT CLOUD ---
 @st.cache_resource
 def instalar_navegadores_playwright():
     try:
@@ -21,10 +21,12 @@ def instalar_navegadores_playwright():
 
 instalar_navegadores_playwright()
 
-# --- FUNCIÓN DE EXTRACCIÓN DE ESTADÍSTICAS POR PARTIDO ---
+
+# --- EXTRACCIÓN INDEPENDIENTE DE CUOTAS Y ESTADÍSTICAS PRINCIPALES ---
 def extraer_detalle_partido(playwright_context, id_partido):
     resultado = {
         "Marcador": "- - -",
+        "Cuotas": "- - -",
         "Tiempo/Estado": "-",
         "Minuto": "-",
         "Stats": {}
@@ -35,101 +37,135 @@ def extraer_detalle_partido(playwright_context, id_partido):
     try:
         page = playwright_context.new_page()
 
-        # Bloquear elementos pesados para maximizar velocidad
-        page.route(
-            "**/*",
-            lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_()
-        )
-
+        # Cargar página completa sin abortar scripts para no romper React
         page.goto(url, timeout=30000, wait_until="domcontentloaded")
 
-        # 1. Esperar al marcador y cabecera
+        # 1. Esperar encabezado del partido
         try:
             page.wait_for_selector("div.detailScore__wrapper", timeout=6000)
         except Exception:
             pass
 
-        # 2. Hacer clic explícito en la pestaña "Estadísticas"
+        # 2. EXTRACCIÓN INDEPENDIENTE: CUOTAS 1X2
+        # Esperar a que el bloque de cuotas se hidrate en el DOM
+        try:
+            page.wait_for_selector(
+                '[data-analytics-context="widget-match-summary-odds"], [data-analytics-element*="ODDS_COMPARISONS_ODD_CELL"]',
+                timeout=4000
+            )
+        except Exception:
+            pass
+
+        soup_inicial = BeautifulSoup(page.content(), "html.parser")
+
+        # Extraer cuotas 1X2 sin depender de ningún bookmaker ID
+        btn_1 = soup_inicial.select_one('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_1"] [data-testid="wcl-oddsValue"]')
+        btn_x = soup_inicial.select_one('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_2"] [data-testid="wcl-oddsValue"]')
+        btn_2 = soup_inicial.select_one('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_3"] [data-testid="wcl-oddsValue"]')
+
+        if btn_1 and btn_x and btn_2:
+            resultado["Cuotas"] = f"1:{btn_1.get_text(strip=True)} X:{btn_x.get_text(strip=True)} 2:{btn_2.get_text(strip=True)}"
+        else:
+            # Respaldo dentro del contenedor general de cuotas
+            bloque_cuotas = soup_inicial.select_one('div[data-analytics-context="widget-match-summary-odds"]')
+            if bloque_cuotas:
+                valores = [span.get_text(strip=True) for span in bloque_cuotas.select('[data-testid="wcl-oddsValue"]')]
+                if len(valores) >= 3:
+                    resultado["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
+
+        # 3. EXTRACCIÓN INDEPENDIENTE: ESTADÍSTICAS PRINCIPALES
+        # Asegurar navegación a la pestaña de estadísticas si no está activa
         tab_stats = page.locator('a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")')
         if tab_stats.count() > 0:
             try:
-                # Comprobar si ya está activo
                 clases = tab_stats.first.get_attribute("class") or ""
                 if "active" not in clases:
                     tab_stats.first.click(force=True)
             except Exception:
                 pass
 
-        # 3. Esperar a que el contenedor de estadísticas aparezca
+        # Esperar a que el grupo de estadísticas aparezca
         try:
             page.wait_for_selector(
-                '[data-testid="statGroup"], [data-testid="wcl-statistics"], .tabContent__match-statistics',
-                timeout=5000
+                '[data-testid="statGroup"], div.section--teamStats, div.tabContent__match-statistics',
+                timeout=6000
             )
         except Exception:
-            # Pausa mínima de cortesía para dar margen al renderizado asíncrono
-            time.sleep(1)
+            time.sleep(1.5)
 
-        soup = BeautifulSoup(page.content(), "html.parser")
+        soup_stats = BeautifulSoup(page.content(), "html.parser")
 
-        # Marcador
-        score = soup.select_one("div.detailScore__wrapper")
+        # Datos básicos
+        score = soup_stats.select_one("div.detailScore__wrapper")
         if score:
             resultado["Marcador"] = score.get_text(separator=" ", strip=True)
 
-        # Estado del encuentro
-        status = soup.select_one("span.fixedHeaderDuel__detailStatus")
+        status = soup_stats.select_one("span.fixedHeaderDuel__detailStatus")
         if status:
             resultado["Tiempo/Estado"] = status.get_text(strip=True)
 
-        # Minuto de juego
-        minuto = soup.select_one("span.eventTime")
+        minuto = soup_stats.select_one("span.eventTime")
         if minuto:
             resultado["Minuto"] = minuto.get_text(strip=True)
 
-        # 4. EXTRACCIÓN DE MÉTRICAS (Agnóstica de pestaña o período)
-        # Buscar en todo el contenedor de estadísticas o en el cuerpo entero
-        bloque_stats = soup.select_one('div.tabContent__match-statistics') or soup
+        # 4. AISLAR EXCLUSIVAMENTE EL GRUPO: "Estadísticas principales"
+        primer_grupo = None
+        for grupo in soup_stats.select('div[data-testid="statGroup"]'):
+            titulo = grupo.select_one('[data-testid="wcl-headerSection-text"]')
+            if titulo and "principal" in titulo.get_text(strip=True).lower():
+                primer_grupo = grupo
+                break
 
-        # Tipo 1: Filas estándar (xG, Posesión, Pases, Faltas, Fuera de juego, etc.)
-        for fila in bloque_stats.select('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]'):
-            nombre_el = (
-                fila.select_one('[class*="wcl-name_"]') or
-                fila.select_one('[class*="wcl-label_"]') or
-                fila.select_one('[data-testid*="category"]')
-            )
-            vals = fila.select('[class*="wcl-value_"]')
+        # Si no tiene título explícito, tomar el primer statGroup disponible
+        if not primer_grupo:
+            grupos = soup_stats.select('div[data-testid="statGroup"]')
+            if grupos:
+                primer_grupo = grupos[0]
 
-            if nombre_el and len(vals) >= 2:
-                nombre = nombre_el.get_text(strip=True)
-                if nombre:
-                    key_l = f"{nombre} (L)"
-                    if key_l not in resultado["Stats"]:
-                        resultado["Stats"][key_l] = vals[0].get_text(strip=True)
-                        resultado["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+        if primer_grupo:
+            # 4.1. Filas estándar (xG, Posesión, Pases, Faltas)
+            for fila in primer_grupo.select('[data-testid="wcl-statistics"]'):
+                nombre_el = (
+                    fila.select_one('[class*="wcl-name_"]') or
+                    fila.select_one('[class*="wcl-label_"]')
+                )
+                valores = fila.select('[class*="wcl-value_"]')
+                if nombre_el and len(valores) >= 2:
+                    nombre = nombre_el.get_text(strip=True)
+                    if nombre:
+                        resultado["Stats"][f"{nombre} (L)"] = valores[0].get_text(strip=True)
+                        resultado["Stats"][f"{nombre} (V)"] = valores[-1].get_text(strip=True)
 
-        # Tipo 2: Barras de remates / tiros al arco
-        for shot_bar in bloque_stats.select('[class*="wcl-shotOnTargetStats_"]'):
-            nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
-            vals = shot_bar.select('[class*="wcl-value_"]')
-            if nombre_el and len(vals) >= 2:
-                nombre = nombre_el.get_text(strip=True)
-                if nombre:
-                    resultado["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
-                    resultado["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+            # 4.2. Gráficos de barra (Remates a puerta / fuera)
+            for shot_bar in primer_grupo.select('[class*="wcl-shotOnTargetStats_"]'):
+                nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
+                valores = shot_bar.select('[class*="wcl-value_"]')
+                if nombre_el and len(valores) >= 2:
+                    nombre = nombre_el.get_text(strip=True)
+                    if nombre:
+                        resultado["Stats"][f"{nombre} (L)"] = valores[0].get_text(strip=True)
+                        resultado["Stats"][f"{nombre} (V)"] = valores[-1].get_text(strip=True)
 
-        # Tipo 3: Córneres y Tarjetas con iconos SVG
-        for badge in bloque_stats.select('[class*="wcl-incidentValueBadge_"]'):
-            spans = badge.find_all("span", recursive=False)
-            svg = badge.find("svg")
-            if len(spans) >= 2 and svg:
-                svg_id = svg.get("data-testid", "").lower()
-                nombre = "Córneres" if "corner" in svg_id else ("Tarjetas amarillas" if "yellow" in svg_id else "Tarjetas rojas")
-                resultado["Stats"][f"{nombre} (L)"] = spans[0].get_text(strip=True)
-                resultado["Stats"][f"{nombre} (V)"] = spans[-1].get_text(strip=True)
+            # 4.3. Badges de incidentes SVG (Córneres y Tarjetas)
+            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"]'):
+                spans = badge.find_all("span", recursive=False)
+                svg = badge.find("svg")
+                if len(spans) >= 2 and svg:
+                    svg_id = svg.get("data-testid", "").lower()
+                    if "corner" in svg_id:
+                        nombre = "Córneres"
+                    elif "yellow" in svg_id:
+                        nombre = "Tarjetas amarillas"
+                    elif "red" in svg_id:
+                        nombre = "Tarjetas rojas"
+                    else:
+                        nombre = "Incidentes"
+
+                    resultado["Stats"][f"{nombre} (L)"] = spans[0].get_text(strip=True)
+                    resultado["Stats"][f"{nombre} (V)"] = spans[-1].get_text(strip=True)
 
     except Exception as e:
-        print(f"Error procesando {url}: {e}")
+        print(f"Error procesando partido {id_partido}: {e}")
     finally:
         if page:
             page.close()
@@ -137,12 +173,12 @@ def extraer_detalle_partido(playwright_context, id_partido):
     return resultado
 
 
-# --- INTERFAZ PRINCIPAL DE STREAMLIT ---
+# --- INTERFAZ STREAMLIT ---
 st.set_page_config(page_title="Monitor de Estadísticas en Vivo", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo")
 
 if st.button("🔄 Ejecutar Escaneo Completo"):
-    with st.spinner("Conectando con Flashscore y escaneando partidos en vivo..."):
+    with st.spinner("Conectando con Flashscore y leyendo partidos en directo..."):
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -159,11 +195,11 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
             main = context.new_page()
 
             try:
-                main.goto("https://www.flashscore.pe/", timeout=30000, wait_until="domcontentloaded")
+                main.goto("https://www.flashscore.pe/", timeout=35000, wait_until="domcontentloaded")
 
-                # Clic en pestaña "EN DIRECTO"
+                # Clic en "EN DIRECTO"
                 btn_live = "//div[contains(@class, 'filters__text') and text()='EN DIRECTO']"
-                main.wait_for_selector(btn_live, timeout=10000)
+                main.wait_for_selector(btn_live, timeout=12000)
                 main.locator(btn_live).click()
                 time.sleep(2.5)
 
@@ -178,45 +214,33 @@ if st.button("🔄 Ejecutar Escaneo Completo"):
                     for i, p_div in enumerate(partidos[:limite]):
                         id_p = p_div.get("id").split("_")[-1]
 
-                        # 1. Nombres de equipos
+                        # Obtener nombres de equipos
                         h_team = p_div.find("div", class_=lambda c: c and "home" in c.lower() and "participant" in c.lower())
                         a_team = p_div.find("div", class_=lambda c: c and "away" in c.lower() and "participant" in c.lower())
                         nombre_partido = f"{h_team.get_text(strip=True) if h_team else 'Local'} vs {a_team.get_text(strip=True) if a_team else 'Visitante'}"
 
-                        # 2. Extracción de cuotas directas de la fila principal (Garantiza que siempre haya cuota si la casa la cotiza)
-                        cuotas_str = "- - -"
-                        c_cells = p_div.select('[data-testid="wcl-oddsValue"], [class*="odds__value"]')
-                        if len(c_cells) >= 3:
-                            cuotas_str = f"1:{c_cells[0].get_text(strip=True)} X:{c_cells[1].get_text(strip=True)} 2:{c2.get_text(strip=True) if 'c2' in locals() else c_cells[2].get_text(strip=True)}"
-
-                        # 3. Extracción profunda de estadísticas
+                        # Extracción modular e independiente
                         detalle = extraer_detalle_partido(context, id_p)
 
-                        # Si la fila principal tenía marcador/minuto de respaldo
-                        marcador_final = detalle["Marcador"] if detalle["Marcador"] != "- - -" else "-"
-                        estado_final = detalle["Tiempo/Estado"] if detalle["Tiempo/Estado"] != "-" else "-"
-                        minuto_final = detalle["Minuto"] if detalle["Minuto"] != "-" else "-"
-
                         stats_dict = detalle.get("Stats", {})
-
-                        fila_datos = {
+                        fila = {
                             "Partido en Vivo": nombre_partido,
-                            "Marcador": marcador_final,
-                            "Cuotas": cuotas_str,
-                            "Tiempo/Estado": estado_final,
-                            "Minuto": minuto_final
+                            "Marcador": detalle["Marcador"],
+                            "Cuotas": detalle["Cuotas"],
+                            "Tiempo/Estado": detalle["Tiempo/Estado"],
+                            "Minuto": detalle["Minuto"]
                         }
-                        fila_datos.update(stats_dict)
-                        res.append(fila_datos)
+                        fila.update(stats_dict)
+                        res.append(fila)
 
                         bar.progress((i + 1) / limite)
 
                     st.dataframe(pd.DataFrame(res).fillna("-"), use_container_width=True)
                     st.balloons()
                 else:
-                    st.warning("No se encontraron partidos en directo actualmente.")
+                    st.warning("No se encontraron partidos en directo.")
 
             except Exception as e:
-                st.error(f"Error durante el escaneo: {e}")
+                st.error(f"Error en la ejecución: {e}")
             finally:
                 browser.close()
