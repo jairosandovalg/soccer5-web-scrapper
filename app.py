@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import subprocess
 import sys
-import time
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
-# --- CONFIGURACIÓN E INSTALACIÓN DE PLAYWRIGHT ---
+# --- CONFIGURACIÓN E INSTALACIÓN AUTOMÁTICA DE PLAYWRIGHT ---
 @st.cache_resource
 def instalar_navegadores_playwright():
     try:
@@ -21,185 +21,161 @@ def instalar_navegadores_playwright():
 instalar_navegadores_playwright()
 
 
-# --- EXTRACCIÓN GARANTIZADA: CUOTAS PRIMERO, LUEGO ESTADÍSTICAS ---
-def extraer_detalle_partido(page, id_partido):
-    url = f"https://www.flashscore.pe/partido/{id_partido}/"
-    
-    resultado = {
+# --- FUNCIÓN DE EXTRACCIÓN ROBUSTA DE PARTIDO ---
+def extraer_estadisticas_partido(playwright_context, url_partido):
+    datos_partido = {
         "Marcador": "- - -",
         "Cuotas": "- - -",
         "Tiempo/Estado": "-",
         "Minuto": "-",
         "Stats": {}
     }
-
+    page = None
     try:
-        page.goto(url, timeout=35000, wait_until="domcontentloaded")
-
-        # 1. Esperar encabezado del partido
-        try:
-            page.wait_for_selector("div.detailScore__wrapper", timeout=6000)
-        except Exception:
-            pass
-
-        # 2. PASO CRÍTICO: EXTRAER CUOTAS ANTES DE CUALQUIER CLIC
-        # Esperar a que el bloque o celdas de cuotas aparezcan en el DOM
-        try:
-            page.wait_for_selector('[data-testid="wcl-oddsValue"], [data-analytics-context="widget-match-summary-odds"]', timeout=3500)
-        except Exception:
-            pass
-
-        cuotas_extraidas = page.evaluate('''() => {
-            // Estrategia 1: Buscar botones semánticos 1, X, 2
-            const c1 = document.querySelector('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_1"] [data-testid="wcl-oddsValue"]');
-            const cX = document.querySelector('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_2"] [data-testid="wcl-oddsValue"]');
-            const c2 = document.querySelector('[data-analytics-element="ODDS_COMPARISONS_ODD_CELL_3"] [data-testid="wcl-oddsValue"]');
-
-            if (c1 && cX && c2) {
-                const v1 = c1.innerText.trim();
-                const vx = cX.innerText.trim();
-                const v2 = c2.innerText.trim();
-                if (v1 && vx && v2 && !isNaN(parseFloat(v1))) {
-                    return `1:${v1} X:${vx} 2:${v2}`;
-                }
-            }
-
-            // Estrategia 2: Fila contenedora wclOddsRow
-            const fila = document.querySelector(".wclOddsRow, [class*='wclOddsRow']");
-            if (fila) {
-                const vals = Array.from(fila.querySelectorAll('[data-testid="wcl-oddsValue"]'))
-                                  .map(el => el.innerText.trim())
-                                  .filter(t => t && !isNaN(parseFloat(t)));
-                if (vals.length >= 3) {
-                    return `1:${vals[0]} X:${vals[1]} 2:${vals[2]}`;
-                }
-            }
-
-            // Estrategia 3: Cualquier bloque widget-match-summary-odds
-            const bloque = document.querySelector('[data-analytics-context="widget-match-summary-odds"]');
-            if (bloque) {
-                const vals = Array.from(bloque.querySelectorAll('[data-testid="wcl-oddsValue"]'))
-                                  .map(el => el.innerText.trim())
-                                  .filter(t => t && !isNaN(parseFloat(t)));
-                if (vals.length >= 3) {
-                    return `1:${vals[0]} X:${vals[1]} 2:${vals[2]}`;
-                }
-            }
-
-            return "- - -";
-        }''')
+        page = playwright_context.new_page()
+        page.goto(url_partido, timeout=30000, wait_until="domcontentloaded")
         
-        resultado["Cuotas"] = cuotas_extraidas
-
-        # 3. NAVEGAR A ESTADÍSTICAS
+        # 1. Esperar al encabezado del partido
         try:
-            tab_stats = page.locator('a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")')
-            if tab_stats.count() > 0:
+            page.wait_for_selector("div.detailScore__wrapper", timeout=8000)
+        except Exception:
+            pass
+
+        # 2. ESPERA Y EXTRACCIÓN DE CUOTAS (TU BLOQUE ORIGINAL)
+        try:
+            # Esperar a que las cuotas de Betano / Bookmaker aparezcan
+            page.wait_for_selector("button[data-analytics-bookmaker-id]", timeout=5000)
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass 
+
+        # Primer snapshot con BeautifulSoup para Marcador y Cuotas
+        soup = BeautifulSoup(page.content(), "html.parser")
+        
+        score = soup.select_one("div.detailScore__wrapper")
+        if score: 
+            datos_partido["Marcador"] = score.get_text(separator=" ", strip=True)
+        
+        status = soup.select_one("span.fixedHeaderDuel__detailStatus")
+        if status: 
+            datos_partido["Tiempo/Estado"] = status.get_text(strip=True)
+        
+        minuto = soup.select_one("span.eventTime")
+        if minuto: 
+            datos_partido["Minuto"] = minuto.get_text(strip=True)
+
+        # --- TU BLOQUE DE CUOTAS REFORZADO ---
+        # Prioridad 1: Bookmaker 660 (Betano / Casa principal)
+        botones = soup.find_all("button", {"data-analytics-bookmaker-id": "660"})
+        valores = []
+        for btn in botones:
+            span = btn.find("span", {"data-testid": "wcl-oddsValue"})
+            if span and span.get_text(strip=True):
+                valores.append(span.get_text(strip=True))
+
+        # Prioridad 2: Si no fue 660, buscar cualquier otra casa de apuestas disponible
+        if len(valores) < 3:
+            botones_genericos = soup.find_all("button", attrs={"data-analytics-bookmaker-id": True})
+            for btn in botones_genericos:
+                span = btn.find("span", {"data-testid": "wcl-oddsValue"})
+                if span and span.get_text(strip=True):
+                    valores.append(span.get_text(strip=True))
+                if len(valores) == 3:
+                    break
+
+        if len(valores) >= 3:
+            datos_partido["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
+
+        # 3. CAMBIAR A LA PESTAÑA DE ESTADÍSTICAS
+        selector_stats = 'a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas"), button:has-text("Estadísticas")'
+        tab_stats = page.locator(selector_stats)
+        if tab_stats.count() > 0:
+            try:
                 clases = tab_stats.first.get_attribute("class") or ""
                 if "active" not in clases:
                     tab_stats.first.click(force=True)
-                    time.sleep(0.8)
-        except Exception:
-            pass
+                    page.wait_for_timeout(1000)
+            except Exception:
+                pass
 
-        # Asegurar sub-pestaña "Partido" (alias 74)
-        try:
-            tab_partido_completo = page.locator('a[data-analytics-alias="74"], a:has-text("Partido")')
-            if tab_partido_completo.count() > 0:
-                clases_sub = tab_partido_completo.first.get_attribute("class") or ""
+        # Sub-pestaña "Partido" completo (alias 74)
+        tab_partido = page.locator('a[data-analytics-alias="74"], a:has-text("Partido")')
+        if tab_partido.count() > 0:
+            try:
+                clases_sub = tab_partido.first.get_attribute("class") or ""
                 if "active" not in clases_sub:
-                    tab_partido_completo.first.click(force=True)
-                    time.sleep(0.5)
-        except Exception:
-            pass
+                    tab_partido.first.click(force=True)
+                    page.wait_for_timeout(600)
+            except Exception:
+                pass
 
-        # 4. ESPERAR Y EXTRAER ESTADÍSTICAS PRINCIPALES
+        # Esperar a que el bloque de estadísticas se renderice
         try:
-            page.wait_for_selector('[data-testid="statGroup"], [data-testid="wcl-statistics"]', timeout=5000)
+            page.wait_for_selector('[data-testid="statGroup"], [data-testid="wcl-statistics"], .tabContent__match-statistics', timeout=5000)
         except Exception:
-            time.sleep(1)
+            page.wait_for_timeout(1000)
 
-        payload = page.evaluate('''() => {
-            const data = {
-                marcador: "- - -",
-                tiempo: "-",
-                minuto: "-",
-                stats: {}
-            };
+        # 4. EXTRACCIÓN DE ESTADÍSTICAS PRINCIPALES
+        soup_s = BeautifulSoup(page.content(), "html.parser")
+        
+        # Buscar el bloque específico de "Estadísticas principales"
+        primer_grupo = None
+        for grupo in soup_s.select('div[data-testid="statGroup"]'):
+            titulo = grupo.select_one('[data-testid="wcl-headerSection-text"]')
+            if titulo and "principal" in titulo.get_text(strip=True).lower():
+                primer_grupo = grupo
+                break
 
-            const elMarcador = document.querySelector("div.detailScore__wrapper");
-            if (elMarcador) data.marcador = elMarcador.innerText.replace(/\\n/g, " ").trim();
+        if not primer_grupo:
+            grupos = soup_s.select('div[data-testid="statGroup"]')
+            if grupos:
+                primer_grupo = grupos[0]
+            else:
+                primer_grupo = soup_s.select_one('div.tabContent__match-statistics') or soup_s
 
-            const elTiempo = document.querySelector("span.fixedHeaderDuel__detailStatus");
-            if (elTiempo) data.tiempo = elTiempo.innerText.trim();
+        if primer_grupo:
+            # A. Filas estándar (xG, Posesión, Pases, etc.)
+            for fila in primer_grupo.select('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]'):
+                nombre_el = (
+                    fila.select_one('[class*="wcl-name_"]') or
+                    fila.select_one('[class*="wcl-label_"]') or
+                    fila.select_one('[data-testid*="category"]')
+                )
+                vals = fila.select('[class*="wcl-value_"]')
+                if nombre_el and len(vals) >= 2:
+                    nombre = nombre_el.get_text(strip=True)
+                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
 
-            const elMinuto = document.querySelector("span.eventTime");
-            if (elMinuto) data.minuto = elMinuto.innerText.trim();
+            # B. Remates a puerta (barras)
+            for shot_bar in primer_grupo.select('[class*="wcl-shotOnTargetStats_"]'):
+                nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
+                vals = shot_bar.select('[class*="wcl-value_"]')
+                if nombre_el and len(vals) >= 2:
+                    nombre = nombre_el.get_text(strip=True)
+                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
 
-            // Ubicar exclusivamente el bloque de Estadísticas Principales
-            const grupos = Array.from(document.querySelectorAll('[data-testid="statGroup"]'));
-            let targetGroup = grupos.find(g => {
-                const header = g.querySelector('[data-testid="wcl-headerSection-text"]');
-                return header && header.innerText.toLowerCase().includes("principal");
-            }) || grupos[0] || document.querySelector('.section--teamStats') || document.body;
-
-            if (targetGroup) {
-                // Filas estándar
-                const filas = targetGroup.querySelectorAll('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]');
-                filas.forEach(f => {
-                    const nombreEl = f.querySelector('[class*="wcl-name_"]') || f.querySelector('[class*="wcl-label_"]') || f.querySelector('[data-testid*="category"]');
-                    const valores = Array.from(f.querySelectorAll('[class*="wcl-value_"]')).map(v => v.innerText.trim());
-                    if (nombreEl && valores.length >= 2) {
-                        const nombre = nombreEl.innerText.trim();
-                        if (nombre) {
-                            data.stats[`${nombre} (L)`] = valores[0];
-                            data.stats[`${nombre} (V)`] = valores[valores.length - 1];
-                        }
-                    }
-                });
-
-                // Barras de remates
-                const shotBars = targetGroup.querySelectorAll('[class*="wcl-shotOnTargetStats_"]');
-                shotBars.forEach(sb => {
-                    const lbl = sb.querySelector('[class*="wcl-label_"]');
-                    const valores = Array.from(sb.querySelectorAll('[class*="wcl-value_"]')).map(v => v.innerText.trim());
-                    if (lbl && valores.length >= 2) {
-                        const nombre = lbl.innerText.trim();
-                        data.stats[`${nombre} (L)`] = valores[0];
-                        data.stats[`${nombre} (V)`] = valores[valores.length - 1];
-                    }
-                });
-
-                // Córneres y tarjetas
-                const badges = targetGroup.querySelectorAll('[class*="wcl-incidentValueBadge_"]');
-                badges.forEach(b => {
-                    const spans = Array.from(b.querySelectorAll("span")).map(s => s.innerText.trim());
-                    const svg = b.querySelector("svg");
-                    if (spans.length >= 2 && svg) {
-                        const tid = (svg.getAttribute("data-testid") || "").toLowerCase();
-                        let nombre = "Incidentes";
-                        if (tid.includes("corner")) nombre = "Córneres";
-                        else if (tid.includes("yellow")) nombre = "Tarjetas amarillas";
-                        else if (tid.includes("red")) nombre = "Tarjetas rojas";
-
-                        data.stats[`${nombre} (L)`] = spans[0];
-                        data.stats[`${nombre} (V)`] = spans[spans.length - 1];
-                    }
-                });
-            }
-
-            return data;
-        }''')
-
-        resultado["Marcador"] = payload.get("marcador", "- - -")
-        resultado["Tiempo/Estado"] = payload.get("tiempo", "-")
-        resultado["Minuto"] = payload.get("minuto", "-")
-        resultado["Stats"] = payload.get("stats", {})
+            # C. Incidentes con SVG (Córneres y Tarjetas)
+            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"]'):
+                spans = badge.find_all("span", recursive=False)
+                svg = badge.find("svg")
+                if len(spans) >= 2 and svg:
+                    svg_id = svg.get("data-testid", "").lower()
+                    nombre = "Córneres" if "corner" in svg_id else ("Tarjetas amarillas" if "yellow" in svg_id else "Tarjetas rojas")
+                    if f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = spans[0].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (V)"] = spans[-1].get_text(strip=True)
 
     except Exception as e:
-        print(f"Error procesando {id_partido}: {e}")
+        print(f"Error parseando {url_partido}: {e}")
+    finally:
+        if page:
+            page.close()
 
-    return resultado
+    return datos_partido
 
 
 # --- INTERFAZ STREAMLIT ---
@@ -207,72 +183,63 @@ st.set_page_config(page_title="Monitor de Estadísticas en Vivo", layout="wide")
 st.title("📊 Monitor de Estadísticas en Vivo")
 
 if st.button("🔄 Ejecutar Escaneo Completo"):
-    with st.spinner("Escaneando datos y cuotas en tiempo real..."):
+    with st.spinner("Conectando con Flashscore y escaneando datos en directo..."):
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled"
+                    "--disable-dev-shm-usage"
                 ]
             )
-
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1366, "height": 768}
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
-
-            context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-
             main = context.new_page()
 
             try:
                 main.goto("https://www.flashscore.pe/", timeout=35000, wait_until="domcontentloaded")
 
                 # Clic en "EN DIRECTO"
-                btn_live = main.locator("//div[contains(@class, 'filters__text') and text()='EN DIRECTO']")
-                btn_live.wait_for(timeout=15000)
-                btn_live.click()
-                time.sleep(2.5)
+                btn_live = "//div[contains(@class, 'filters__text') and text()='EN DIRECTO']"
+                main.wait_for_selector(btn_live, timeout=12000)
+                main.locator(btn_live).click()
+                main.wait_for_timeout(2500)
 
-                # Obtener listado de partidos
-                partidos_base = main.evaluate('''() => {
-                    const filas = Array.from(document.querySelectorAll("div[id^='g_1_']"));
-                    return filas.map(f => {
-                        const h = f.querySelector("div[class*='home'][class*='participant']");
-                        const a = f.querySelector("div[class*='away'][class*='participant']");
-                        return {
-                            id: f.id.replace("g_1_", ""),
-                            nombre: `${h ? h.innerText.trim() : 'Local'} vs ${a ? a.innerText.trim() : 'Visitante'}`
-                        };
-                    });
-                }''')
+                soup_main = BeautifulSoup(main.content(), "html.parser")
+                partidos = soup_main.find_all("div", id=lambda x: x and x.startswith("g_1_"))
 
-                if partidos_base:
+                if partidos:
                     res = []
-                    limite = min(len(partidos_base), 10)
-                    progreso = st.progress(0)
+                    limite = min(len(partidos), 10)
+                    bar = st.progress(0)
 
-                    detalle_page = context.new_page()
+                    for i, p_div in enumerate(partidos[:limite]):
+                        id_p = p_div.get("id").split("_")[-1]
 
-                    for i, base in enumerate(partidos_base[:limite]):
-                        detalle = extraer_detalle_partido(detalle_page, base["id"])
+                        # Nombres de los equipos
+                        h_team = p_div.find("div", class_=lambda c: c and "home" in c.lower() and "participant" in c.lower())
+                        a_team = p_div.find("div", class_=lambda c: c and "away" in c.lower() and "participant" in c.lower())
+                        nombre_partido = f"{h_team.get_text(strip=True) if h_team else 'Local'} vs {a_team.get_text(strip=True) if a_team else 'Visitante'}"
 
+                        # URL directa a la vista del partido
+                        url = f"https://www.flashscore.pe/partido/{id_p}/#/resumen/estadisticas"
+                        data = extraer_estadisticas_partido(context, url)
+
+                        # Armar fila
+                        stats_dict = data.pop("Stats", {})
                         fila = {
-                            "Partido en Vivo": base["nombre"],
-                            "Marcador": detalle["Marcador"],
-                            "Cuotas": detalle["Cuotas"],
-                            "Tiempo/Estado": detalle["Tiempo/Estado"],
-                            "Minuto": detalle["Minuto"]
+                            "Partido en Vivo": nombre_partido,
+                            "Marcador": data["Marcador"],
+                            "Cuotas": data["Cuotas"],
+                            "Tiempo/Estado": data["Tiempo/Estado"],
+                            "Minuto": data["Minuto"]
                         }
-                        fila.update(detalle["Stats"])
+                        fila.update(stats_dict)
                         res.append(fila)
 
-                        progreso.progress((i + 1) / limite)
-
-                    detalle_page.close()
+                        bar.progress((i + 1) / limite)
 
                     st.dataframe(pd.DataFrame(res).fillna("-"), use_container_width=True)
                     st.balloons()
